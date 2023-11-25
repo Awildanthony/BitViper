@@ -8,94 +8,126 @@ import queue
 
 
 class PacketSniffer(threading.Thread):
-    def __init__(self, queue):
+    def __init__(self, queue, lock):
         super().__init__()
         self.queue = queue
+        self.lock = lock
         self.running = False
 
     def run(self):
+        # Establish a socket (OSI Layer 2, raw socket, all packets)
         connection = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(3))
+        connection.settimeout(1)    # Set a timeout to prevent blocking
         packet_number = 0
         start_time = time.time()
 
         while self.running:
-            raw_data, addr = connection.recvfrom(65535)
+            try:
+                # Read byte size of IP packet in raw data from socket
+                raw_data, addr = connection.recvfrom(65535)
+            except socket.timeout:
+                # If recvfrom times out, just try again
+                continue
+
+            # Parse raw data from network frame into ethernet frame
             dest_mac, src_mac, eth_proto, data = ethernet_frame(raw_data)
 
             # Increment packet number and get current time
             packet_number += 1
             current_time = round(time.time() - start_time, 6)
 
-            # Add the packet data to the queue instead of the treeview
-            self.queue.put((packet_number, current_time, src_mac, dest_mac, eth_proto, data))
+            # Use a lock to prevent simultaneous access
+            with self.lock:
+                if not self.queue.full():
+                    self.queue.put((packet_number, current_time, src_mac, dest_mac, eth_proto, data))
 
     def stop(self):
         self.running = False
-        self.join()  # Wait for the thread to finish
+        self.join()     # Wait for the thread to finish before stopping
+
+
+class SnifferGUI:
+    def __init__(self, root, packet_queue, lock):
+        self.root = root
+        self.packet_queue = packet_queue
+        self.lock = lock
+        self.sniffer = None
+        self.setup_ui()
+
+    def setup_ui(self):
+        # Set launch header and window dimensions
+        self.root.title("Socketsloth")
+        self.root.geometry("2650x1000")
+
+        # Set data font style and row height
+        style = ttk.Style()
+        style.configure("Treeview", font=('Script', 11), rowheight=35)
+
+        # Set heading titles
+        self.tree = ttk.Treeview(self.root, columns=("No.", "Time", "Source", "Destination", "Protocol", "Data"), show="headings")
+        self.tree.heading("No.", text="No.")
+        self.tree.heading("Time", text="Time")
+        self.tree.heading("Source", text="Source")
+        self.tree.heading("Destination", text="Destination")
+        self.tree.heading("Protocol", text="Protocol")
+        self.tree.heading("Data", text="Data")
+
+        # Fetch screen dimensions
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        # Set data columns' titles and widths
+        for col, ratio in [("No.", 0.05), ("Time", 0.10), ("Source", 0.15), ("Destination", 0.15), ("Protocol", 0.10), ("Data", 0.35)]:
+            self.tree.column(col, anchor="center", width=int(screen_width*ratio))
+            self.tree.heading(col, text=col, anchor="center")
+
+        self.tree.pack(fill=tk.BOTH, expand=True)
+
+        # Set buttons
+        self.start_button = tk.Button(self.root, text="Start", command=self.start_sniffer, bg="green")
+        self.start_button.pack()
+        self.stop_button = tk.Button(self.root, text="Stop", command=self.stop_sniffer, state=tk.DISABLED, bg="red")
+        self.stop_button.pack()
+        self.clear_button = tk.Button(self.root, text="Clear", command=self.clear_table, state=tk.DISABLED, bg="blue")
+        self.clear_button.pack()
+
+        self.update_gui()
+
+    def start_sniffer(self):
+        self.sniffer = PacketSniffer(self.packet_queue, self.lock)
+        self.sniffer.running = True
+        self.sniffer.start()
+        self.start_button.config(state=tk.DISABLED)
+        self.stop_button.config(state=tk.NORMAL)
+        self.clear_button.config(state=tk.DISABLED)
+
+    def stop_sniffer(self):
+        self.sniffer.stop()
+        self.start_button.config(state=tk.NORMAL)
+        self.stop_button.config(state=tk.DISABLED)
+        if self.tree.get_children():
+            self.clear_button.config(state=tk.NORMAL)
+
+    def clear_table(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        self.clear_button.config(state=tk.DISABLED)
+
+    def update_gui(self):
+        while not self.packet_queue.empty():
+            packet = self.packet_queue.get()
+            new_item = self.tree.insert("", "end", values=packet)
+            self.tree.see(new_item)
+            if not self.sniffer.running:
+                self.clear_button.config(state=tk.NORMAL)
+        self.root.after(1000, self.update_gui)
 
 
 def main():
-    # Create a Tkinter window
     root = tk.Tk()
-    root.title("Packet Sniffer")
-
-    # Set launch dimensions
-    root.geometry("2650x1000")
-
-    # Create a queue for communication between threads
-    packet_queue = queue.Queue()
-
-    # Set text font, text size, row height, etc.
-    style = ttk.Style()
-    style.configure("Treeview", font=('Script', 11), rowheight=35)
-
-    # Create a treeview for the packet data
-    tree = ttk.Treeview(root, columns=("No.", "Time", "Source", "Destination", "Protocol", "Data"), show="headings")
-    tree.heading("No.", text="No.")
-    tree.heading("Time", text="Time")
-    tree.heading("Source", text="Source")
-    tree.heading("Destination", text="Destination")
-    tree.heading("Protocol", text="Protocol")
-    tree.heading("Data", text="Data")
-
-    # Get screen dimensions (2880 x 1800)
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-
-    for col, ratio in [("No.", 0.05), ("Time", 0.10), ("Source", 0.15), ("Destination", 0.15), ("Protocol", 0.10), ("Data", 0.35)]:
-        tree.column(col, anchor="center", width=int(screen_width*ratio))    # Manually set each column's width
-        tree.heading(col, text=col, anchor="center")                        # Configure columns to stretch with the window
-
-    tree.pack(fill=tk.BOTH, expand=True)
-
-    def start_sniffer(packet_queue):
-        global sniffer
-        sniffer = PacketSniffer(packet_queue)
-        sniffer.running = True
-        sniffer.start()
-        start_button.config(state=tk.DISABLED)  # Disable the start button when it's clicked
-        stop_button.config(state=tk.NORMAL)     # Enable the stop button when the start button is clicked
-
-    def stop_sniffer():
-        sniffer.stop()
-        start_button.config(state=tk.NORMAL)    # Enable the start button when the stop button is clicked
-        stop_button.config(state=tk.DISABLED)   # Disable the stop button when it's clicked
-
-    # Create start and stop buttons
-    start_button = tk.Button(root, text="Start", command=lambda: start_sniffer(packet_queue), bg="green")
-    start_button.pack()
-    stop_button = tk.Button(root, text="Stop", command=stop_sniffer, state=tk.DISABLED, bg="red")  # Disable the stop button initially
-    stop_button.pack()
-
-    # Periodically check the queue (every second) and update the GUI
-    def update_gui():
-        while not packet_queue.empty():
-            packet = packet_queue.get()
-            new_item = tree.insert("", "end", values=packet)     # Insert the new item
-            tree.see(new_item)                                   # Automatically scroll to the new item
-        root.after(1000, update_gui)
-
-    update_gui()
+    packet_queue = queue.Queue(maxsize=1000)    # Set a maximum size for the queue
+    lock = threading.Lock()                     # Create a lock for thread safety
+    gui = SnifferGUI(root, packet_queue, lock)
     root.mainloop()
 
 
