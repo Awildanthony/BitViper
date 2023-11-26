@@ -7,6 +7,12 @@ from sniffer import *
 import queue
 
 
+# Constants
+MAX_PACKET_SIZE = 65535
+MAX_PACKET_QUEUE_SIZE = 1000
+SOCKET_TIMEOUT = 1
+
+
 class PacketSniffer(threading.Thread):
     def __init__(self, queue, lock):
         super().__init__()
@@ -18,22 +24,26 @@ class PacketSniffer(threading.Thread):
     def run(self):
         # Establish a socket (OSI Layer 2, raw socket, all packets)
         connection = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(3))
-        connection.settimeout(1)    # Set a timeout to prevent blocking
+
+        # Set a timeout to prevent blocking
+        connection.settimeout(SOCKET_TIMEOUT)
+
+        # Start counters
         packet_number = 0
         start_time = time.time()
 
         while self.running:
             try:
                 # Read byte size of IP packet in raw data from socket
-                raw_data, addr = connection.recvfrom(65535)
+                raw_data, addr = connection.recvfrom(MAX_PACKET_SIZE)
             except socket.timeout:
                 # If recvfrom times out, just try again
                 continue
 
             # Parse raw data from network frame into ethernet frame
             dest_mac, src_mac, eth_proto, data = ethernet_frame(raw_data)
-            proto = eth_proto   # default value
-            self.hex_data = data 
+            eth_protocol = eth_proto    # (default value)
+            self.hex_data = data        # (default value)
 
             # Check the Ethernet protocol and unpack accordingly
             if eth_proto == "IPv4":
@@ -42,42 +52,39 @@ class PacketSniffer(threading.Thread):
                 # Check the IPv4 protocol and unpack accordingly
                 if proto == 1:  # ICMP
                     icmp_type, code, checksum, data = unpack_icmp(data)
-                    proto = "ICMP"
+                    eth_protocol = "ICMP"
                     hex_data = data
                 elif proto == 6:  # TCP
                     src_port, dst_port, seq, ack, flag_urg, flag_ack, flag_psh, flag_rst, flag_syn, flag_fin, data = unpack_tcp(data)
-                    proto = "TCP"
+                    eth_protocol = "TCP"
                     hex_data = data
                     try:
-                        data = "{} → {} [???] Seq={} Ack={}".format(
-                            src_port, dst_port, seq, flag_ack
-                        ).encode("utf-8").decode("utf-8")
+                        data = f"{src_port} → {dst_port} [???] Seq={seq} Ack={flag_ack}".encode("utf-8").decode("utf-8")
                     except UnicodeDecodeError:
                         data = "Decoding error"
 
                 elif proto == 17:  # UDP
                     src_port, dst_port, size, data = unpack_udp(data)
-                    proto = "UDP"
+                    eth_protocol = "UDP"
                     hex_data = data
                     try:
-                        data = "{} → {} Len={}".format(
-                            src_port, dst_port, size
-                        ).encode("utf-8").decode("utf-8")
+                        data = f"{src_port} → {dst_port} Len={size}".encode("utf-8").decode("utf-8")
                     except UnicodeDecodeError:
                         data = "Decoding error"
                 else:  # IPv4 (other)
-                    proto = "IPv4"
+                    eth_protocol = "IPv4"
                     hex_data = data
 
             # Increment packet number and get current time
             packet_number += 1
-            current_time = round(time.time() - start_time, 6)
+            current_time = "{:.6f}".format(time.time() - start_time)
+            current_time = current_time.ljust(8, '0')
 
             # Use a lock to prevent simultaneous access
             with self.lock:
                 if not self.queue.full():
                     # Queue in next row
-                    self.queue.put((packet_number, current_time, src_mac, dest_mac, proto, data))
+                    self.queue.put((packet_number, current_time, src_mac, dest_mac, eth_protocol, len(raw_data), data))
 
     def stop(self):
         self.running = False
@@ -90,6 +97,8 @@ class SnifferGUI:
         self.packet_queue = packet_queue
         self.lock = lock
         self.sniffer = None
+        self.sorting_column = None
+        self.sorting_order = True   # Default sorting order is ascending
         self.setup_ui()
 
     def setup_ui(self):
@@ -101,33 +110,37 @@ class SnifferGUI:
         style = ttk.Style()
         style.configure("Treeview", font=('Script', 11), rowheight=35)
 
-        # Set heading titles
-        self.tree = ttk.Treeview(self.root, columns=("No.", "Time", "Source", "Destination", "Protocol", "Data"), show="headings")
+        # Set buttons
+        button_frame = tk.Frame(self.root)
+        button_frame.pack(side=tk.TOP, fill=tk.X)
+
+        self.start_button = tk.Button(button_frame, text="Start", command=self.start_sniffer, bg="green")
+        self.start_button.pack(side=tk.LEFT, padx=5)
+        self.stop_button = tk.Button(button_frame, text="Stop", command=self.stop_sniffer, state=tk.DISABLED, bg="red")
+        self.stop_button.pack(side=tk.LEFT, padx=5)
+        self.clear_button = tk.Button(button_frame, text="Clear", command=self.clear_table, state=tk.DISABLED, bg="blue")
+        self.clear_button.pack(side=tk.LEFT, padx=5)
+
+        # Set header titles
+        self.tree = ttk.Treeview(self.root, columns=("No.", "Time", "Source", "Destination", "Protocol", "Length", "Data"), show="headings")
         self.tree.heading("No.", text="No.")
         self.tree.heading("Time", text="Time")
         self.tree.heading("Source", text="Source")
         self.tree.heading("Destination", text="Destination")
         self.tree.heading("Protocol", text="Protocol")
+        self.tree.heading("Length", text="Length")
         self.tree.heading("Data", text="Data")
 
         # Fetch screen dimensions
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
 
-        # Set data columns' titles and widths
-        for col, ratio in [("No.", 0.05), ("Time", 0.10), ("Source", 0.15), ("Destination", 0.15), ("Protocol", 0.10), ("Data", 0.35)]:
-            self.tree.column(col, anchor="center", width=int(screen_width*ratio))
-            self.tree.heading(col, text=col, anchor="center")
+        # Set header titles with binding to enable sorting
+        for col, ratio in [("No.", 0.05), ("Time", 0.08), ("Source", 0.13), ("Destination", 0.13), ("Protocol", 0.08), ("Length", 0.08), ("Data", 0.35)]:
+            self.tree.column(col, anchor="center", width=int(screen_width * ratio))
+            self.tree.heading(col, text=col, anchor="center", command=lambda c=col: self.sort_treeview(c))
 
         self.tree.pack(fill=tk.BOTH, expand=True)
-
-        # Set buttons
-        self.start_button = tk.Button(self.root, text="Start", command=self.start_sniffer, bg="green")
-        self.start_button.pack()
-        self.stop_button = tk.Button(self.root, text="Stop", command=self.stop_sniffer, state=tk.DISABLED, bg="red")
-        self.stop_button.pack()
-        self.clear_button = tk.Button(self.root, text="Clear", command=self.clear_table, state=tk.DISABLED, bg="blue")
-        self.clear_button.pack()
 
         # Initialize right-click menu
         self.context_menu = tk.Menu(self.root, tearoff=0)
@@ -177,34 +190,46 @@ class SnifferGUI:
         if selected_item:
             values = self.tree.item(selected_item, 'values')
             if values:
-                packet_number, current_time, src_mac, dest_mac, proto, _ = values
+                packet_number, current_time, src_mac, dest_mac, proto, packet_length, _ = values
                 raw_data_str = format_multi_line("", self.sniffer.hex_data)
 
-                # Create a Toplevel window for displaying raw data
+                # Create a toplevel window for displaying raw data
                 raw_data_window = tk.Toplevel(self.root)
                 raw_data_window.title("Raw Hex Data")
                 raw_data_window.geometry("1400x800")
 
-                # Create a Text widget to display the raw data
+                # Create a text widget to display the raw data
                 text_widget = tk.Text(raw_data_window, wrap=tk.WORD)
                 text_widget.insert(tk.END, raw_data_str)
                 text_widget.pack(expand=True, fill=tk.BOTH)
 
-                # Allow copying text
-                text_widget.config(state=tk.NORMAL)
+                # Set the text widget to read-only
+                text_widget.config(state=tk.DISABLED)
 
-                # Create a function to set the text widget back to read-only after copying
-                def set_read_only(event):
-                    text_widget.config(state=tk.DISABLED)
+    def sort_treeview(self, col):
+        # Check if we're sorting the same column
+        if self.sorting_column == col:
+            # Toggle sorting order
+            self.sorting_order = not self.sorting_order
+        else:
+            # Set default sorting order to ascending for a new column
+            self.sorting_order = True
 
-                # Bind the event to set the text widget to read-only after copying
-                text_widget.bind("<Control-c>", set_read_only)
+        items = [(float(self.tree.set(k, col)) if col in ["Time", "No.", "Length"] else self.tree.set(k, col), k) for k in self.tree.get_children('')]
+        items.sort(reverse=self.sorting_order)
+
+        # Rearrange items in sorted positions
+        for index, (val, k) in enumerate(items):
+            self.tree.move(k, '', index)
+
+        # Update sorting column
+        self.sorting_column = col
 
 
 def main():
     root = tk.Tk()
-    packet_queue = queue.Queue(maxsize=1000)    # Set a maximum size for the queue
-    lock = threading.Lock()                     # Create a lock for thread safety
+    packet_queue = queue.Queue(maxsize=MAX_PACKET_QUEUE_SIZE)    # Set a maximum size for the queue
+    lock = threading.Lock()                                      # Create a lock for thread safety
     gui = SnifferGUI(root, packet_queue, lock)
     root.mainloop()
 
