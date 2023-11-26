@@ -121,6 +121,15 @@ class SnifferGUI:
         self.clear_button = tk.Button(button_frame, text="Clear", command=self.clear_table, state=tk.DISABLED, bg="blue")
         self.clear_button.pack(side=tk.LEFT, padx=5)
 
+        # Add a search bar
+        search_frame = tk.Frame(self.root)
+        search_frame.pack(side=tk.TOP, fill=tk.X)
+
+        self.search_entry = tk.Entry(search_frame, width=30)
+        self.search_entry.pack(side=tk.LEFT, padx=5)
+        search_button = tk.Button(search_frame, text="Search", command=self.apply_search)
+        search_button.pack(side=tk.LEFT)
+
         # Set header titles
         self.tree = ttk.Treeview(self.root, columns=("No.", "Time", "Source", "Destination", "Protocol", "Length", "Data"), show="headings")
         self.tree.heading("No.", text="No.")
@@ -191,20 +200,55 @@ class SnifferGUI:
             values = self.tree.item(selected_item, 'values')
             if values:
                 packet_number, current_time, src_mac, dest_mac, proto, packet_length, _ = values
-                raw_data_str = format_multi_line("", self.sniffer.hex_data)
 
-                # Create a toplevel window for displaying raw data
+                try:
+                    # Try to decode as UTF-8
+                    hex_data = self.sniffer.hex_data.decode('utf-8')
+                except UnicodeDecodeError:
+                    # If decoding fails, display raw data as hexadecimal
+                    hex_data = ' '.join(f'{byte:02X}' for byte in self.sniffer.hex_data)
+
+                # Create a Toplevel window for displaying raw data
                 raw_data_window = tk.Toplevel(self.root)
-                raw_data_window.title("Raw Hex Data")
+                raw_data_window.title("Raw Data Viewer")
                 raw_data_window.geometry("1400x800")
 
-                # Create a text widget to display the raw data
+                # Set the initial format to "Raw Hex Data"
+                format_var = tk.StringVar(raw_data_window)
+                format_var.set("Raw Hex Data")
+
+                # Create a Text widget to display the raw data
                 text_widget = tk.Text(raw_data_window, wrap=tk.WORD)
-                text_widget.insert(tk.END, raw_data_str)
+                text_widget.insert(tk.END, hex_data)
                 text_widget.pack(expand=True, fill=tk.BOTH)
 
                 # Set the text widget to read-only
                 text_widget.config(state=tk.DISABLED)
+
+                # Create a dropdown list for different viewing formats
+                format_menu = tk.OptionMenu(raw_data_window, format_var, "Raw Hex Data", "ASCII", command=lambda x: self.update_format(x, text_widget))
+                format_menu.pack()
+
+    def update_format(self, format_type, text_widget):
+        if format_type == "ASCII":
+            try:
+                # Try to decode as UTF-8, replacing non-printable characters
+                ascii_data = ''.join(chr(byte) if 32 <= byte < 127 else '.' for byte in self.sniffer.hex_data)
+            except UnicodeDecodeError:
+                # If decoding fails, display raw data as hexadecimal
+                ascii_data = ' '.join(f'{byte:02X}' for byte in self.sniffer.hex_data)
+
+            # Display the ASCII data in the Text widget
+            text_widget.config(state=tk.NORMAL)
+            text_widget.delete(1.0, tk.END)
+            text_widget.insert(tk.END, ascii_data)
+            text_widget.config(state=tk.DISABLED)
+        else:
+            # Display the raw hex data
+            text_widget.config(state=tk.NORMAL)
+            text_widget.delete(1.0, tk.END)
+            text_widget.insert(tk.END, ' '.join(f'{byte:02X}' for byte in self.sniffer.hex_data))
+            text_widget.config(state=tk.DISABLED)
 
     def sort_treeview(self, col):
         # Check if we're sorting the same column
@@ -224,6 +268,20 @@ class SnifferGUI:
 
         # Update sorting column
         self.sorting_column = col
+    
+    def apply_search(self):
+        query = self.search_entry.get().lower()  # Convert the query to lowercase for case-insensitive search
+        matching_items = []
+
+        for item_id in self.tree.get_children():
+            item = self.tree.item(item_id, 'values')
+            if any(query in str(value).lower() for value in item):
+                matching_items.append(item_id)
+
+        # Clear current selection and select the matching items
+        self.tree.selection_remove(self.tree.selection())
+        self.tree.selection_add(*matching_items)
+        self.tree.see(matching_items[0] if matching_items else "")  # Scroll to the first matching item if any
 
 
 def main():
