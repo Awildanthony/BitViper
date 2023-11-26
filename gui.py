@@ -1,6 +1,6 @@
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import socket
 import time
 from sniffer import *
@@ -13,6 +13,7 @@ class PacketSniffer(threading.Thread):
         self.queue = queue
         self.lock = lock
         self.running = False
+        self.hex_data = None
 
     def run(self):
         # Establish a socket (OSI Layer 2, raw socket, all packets)
@@ -31,6 +32,42 @@ class PacketSniffer(threading.Thread):
 
             # Parse raw data from network frame into ethernet frame
             dest_mac, src_mac, eth_proto, data = ethernet_frame(raw_data)
+            proto = eth_proto   # default value
+            self.hex_data = data 
+
+            # Check the Ethernet protocol and unpack accordingly
+            if eth_proto == "IPv4":
+                version, header_length, ttl, proto, src, target, data = unpack_ipv4(data)
+
+                # Check the IPv4 protocol and unpack accordingly
+                if proto == 1:  # ICMP
+                    icmp_type, code, checksum, data = unpack_icmp(data)
+                    proto = "ICMP"
+                    hex_data = data
+                elif proto == 6:  # TCP
+                    src_port, dst_port, seq, ack, flag_urg, flag_ack, flag_psh, flag_rst, flag_syn, flag_fin, data = unpack_tcp(data)
+                    proto = "TCP"
+                    hex_data = data
+                    try:
+                        data = "{} → {} [???] Seq={} Ack={}".format(
+                            src_port, dst_port, seq, flag_ack
+                        ).encode("utf-8").decode("utf-8")
+                    except UnicodeDecodeError:
+                        data = "Decoding error"
+
+                elif proto == 17:  # UDP
+                    src_port, dst_port, size, data = unpack_udp(data)
+                    proto = "UDP"
+                    hex_data = data
+                    try:
+                        data = "{} → {} Len={}".format(
+                            src_port, dst_port, size
+                        ).encode("utf-8").decode("utf-8")
+                    except UnicodeDecodeError:
+                        data = "Decoding error"
+                else:  # IPv4 (other)
+                    proto = "IPv4"
+                    hex_data = data
 
             # Increment packet number and get current time
             packet_number += 1
@@ -39,11 +76,12 @@ class PacketSniffer(threading.Thread):
             # Use a lock to prevent simultaneous access
             with self.lock:
                 if not self.queue.full():
-                    self.queue.put((packet_number, current_time, src_mac, dest_mac, eth_proto, data))
+                    # Queue in next row
+                    self.queue.put((packet_number, current_time, src_mac, dest_mac, proto, data))
 
     def stop(self):
         self.running = False
-        self.join()     # Wait for the thread to finish before stopping
+        self.join()  # Wait for the thread to finish before stopping
 
 
 class SnifferGUI:
@@ -91,6 +129,13 @@ class SnifferGUI:
         self.clear_button = tk.Button(self.root, text="Clear", command=self.clear_table, state=tk.DISABLED, bg="blue")
         self.clear_button.pack()
 
+        # Initialize right-click menu
+        self.context_menu = tk.Menu(self.root, tearoff=0)
+        self.context_menu.add_command(label="Show Raw Hex Data", command=self.show_raw_data)
+
+        # Bind the right-click event to the Treeview
+        self.tree.bind("<Button-3>", self.show_context_menu)
+
         self.update_gui()
 
     def start_sniffer(self):
@@ -121,6 +166,39 @@ class SnifferGUI:
             if not self.sniffer.running:
                 self.clear_button.config(state=tk.NORMAL)
         self.root.after(1000, self.update_gui)
+
+    def show_context_menu(self, event):
+        item = self.tree.identify_row(event.y)  # Identify the item under the cursor
+        if item:
+            self.context_menu.post(event.x_root, event.y_root)
+
+    def show_raw_data(self):
+        selected_item = self.tree.selection()
+        if selected_item:
+            values = self.tree.item(selected_item, 'values')
+            if values:
+                packet_number, current_time, src_mac, dest_mac, proto, _ = values
+                raw_data_str = format_multi_line("", self.sniffer.hex_data)
+
+                # Create a Toplevel window for displaying raw data
+                raw_data_window = tk.Toplevel(self.root)
+                raw_data_window.title("Raw Hex Data")
+                raw_data_window.geometry("1400x800")
+
+                # Create a Text widget to display the raw data
+                text_widget = tk.Text(raw_data_window, wrap=tk.WORD)
+                text_widget.insert(tk.END, raw_data_str)
+                text_widget.pack(expand=True, fill=tk.BOTH)
+
+                # Allow copying text
+                text_widget.config(state=tk.NORMAL)
+
+                # Create a function to set the text widget back to read-only after copying
+                def set_read_only(event):
+                    text_widget.config(state=tk.DISABLED)
+
+                # Bind the event to set the text widget to read-only after copying
+                text_widget.bind("<Control-c>", set_read_only)
 
 
 def main():

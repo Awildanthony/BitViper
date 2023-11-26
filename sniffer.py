@@ -6,8 +6,8 @@ from general import *
 indent = lambda n: '\t' * n + ' - '
 data_tab = lambda n: '\t' * n + '   '
 
-# Dictionary for protocol number -> protocol name mapping
-PROTOCOLS = {
+# Dictionary for port number -> protocol name mapping
+PORT_TO_PROTOCOL = {
     1: "ICMP",
     6: "TCP",
     8: "IPv4",
@@ -17,35 +17,35 @@ PROTOCOLS = {
 }
 
 
-# Modify your ethernet_frame function to return protocol name along with number
+# Modify your ethernet_frame function to return protocol name along with port number
 def ethernet_frame(data):
     dest_mac, src_mac, proto = struct.unpack("! 6s 6s H", data[:14])
-    proto_name = PROTOCOLS.get(socket.htons(proto), str(socket.htons(proto)))
+    proto_name = PORT_TO_PROTOCOL.get(socket.htons(proto), str(socket.htons(proto)))
     return get_mac_addr(dest_mac), get_mac_addr(src_mac), proto_name, data[14:]
 
 
 # Unpack IPv4 packet
-def ipv4_packet(data): 
+def unpack_ipv4(data):
     version_header_length = data[0]
     version = version_header_length >> 4
     header_length = (version_header_length & 15) * 4
     ttl, proto, src, target = struct.unpack("! 8x B B 2x 4s 4s", data[:20])
-    return version, header_length, ttl, proto, ipv4(src), ipv4(target), data[header_length:]
+    return version, header_length, ttl, proto, format_ipv4(src), format_ipv4(target), data[header_length:]
 
 
 # Returns properly-formatted IPv4 address
-def ipv4(addr):
+def format_ipv4(addr):
     return '.'.join(map(str, addr))
 
 
 # Unpack ICMP packet
-def icmp_packet(data):
+def unpack_icmp(data):
     icmp_type, code, checksum = struct.unpack("! B B H", data[:4])
     return icmp_type, code, checksum, data[4:]
 
 
 # Unpack TCP segment
-def tcp_segment(data):
+def unpack_tcp(data):
     src_port, dst_port, seq, ack, offset_reserved_flags = struct.unpack("! H H L L H", data[:14])
     offset = (offset_reserved_flags >> 12) * 4
     flag_urg = (offset_reserved_flags & 32) >> 5
@@ -58,6 +58,6 @@ def tcp_segment(data):
 
 
 # Unpack UDP segment
-def udp_segment(data):
+def unpack_udp(data):
     src_port, dst_port, size = struct.unpack("! H H 2x H", data[:8])
     return src_port, dst_port, size, data[8:]
