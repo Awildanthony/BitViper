@@ -67,10 +67,18 @@ class PacketSniffer(threading.Thread):
                     src_port, dst_port, size, data = unpack_udp(data)
                     eth_protocol = "UDP"
                     hex_data = data
-                    try:
-                        data = f"{src_port} → {dst_port} Len={size}".encode("utf-8").decode("utf-8")
-                    except UnicodeDecodeError:
-                        data = "Decoding error"
+
+                    # DNS
+                    if src_port == 53 or dst_port == 53:
+                        eth_protocol = "DNS"
+                        data = format_dns_data(data)
+
+                    else: # UDP (other)
+                        try:
+                            data = f"{src_port} → {dst_port} Len={size}".encode("utf-8").decode("utf-8")
+                        except UnicodeDecodeError:
+                            data = "Decoding error"
+
                 else:  # IPv4 (other)
                     eth_protocol = "IPv4"
                     hex_data = data
