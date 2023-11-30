@@ -1,6 +1,10 @@
 import socket
 import struct
-import textwrap
+from urllib.parse import urlparse
+import re
+
+# Global var to store the most recent (HTTP/S) domain name
+recent_domain = None
 
 # Dictionary for port number -> protocol name mapping
 PORT_TO_PROTOCOL = {
@@ -8,19 +12,21 @@ PORT_TO_PROTOCOL = {
     6: "TCP",
     8: "IPv4",
     17: "UDP",
-    80: "HTTP"
-    # Add more protocols as needed
+    80: "HTTP",
+    443: "HTTPS"
+    # Add more as needed
 }
 
+# Dictionary for DNS record types
 DNS_TYPES = {
-    1: 'A',
+    1: 'A',         # ipv4
     2: 'NS',
     5: 'CNAME',
     15: 'MX',
-    28: 'AAAA',
+    28: 'AAAA',     # ipv6
     33: 'SRV',
     65: 'HTTPS'
-    # Add more if needed
+    # Add more as needed
 }
 
 
@@ -68,7 +74,21 @@ def unpack_tcp(data):
     flag_rst = (offset_reserved_flags & 4) >> 2
     flag_syn = (offset_reserved_flags & 2) >> 1
     flag_fin = offset_reserved_flags & 1
-    return src_port, dst_port, seq, ack, flag_urg, flag_ack, flag_psh, flag_rst, flag_syn, flag_fin, data[offset:]
+
+    # Don't just check conventional ports 80/443 for HTTP(S) data
+    http_method, http_url, status_code = None, None, None
+    http_method, http_url, status_code = parse_http_data(data[offset:])
+
+    # Packet contains HTTP(S) data
+    if http_method and http_url:
+        # HTTP(S) response
+        if status_code:
+            data = f"{http_method} {http_url} {status_code}"
+        # HTTP(S) request
+        else:
+            data = f"{http_method} {http_url}"
+
+    return src_port, dst_port, seq, ack, flag_urg, flag_ack, flag_psh, flag_rst, flag_syn, flag_fin, http_method, http_url, status_code, data
 
 
 # Unpack UDP segment
@@ -136,3 +156,50 @@ def parse_dns_name(data):
                 pass  # Ignore labels that cannot be decoded
             data = data[1 + length:]
     return '.'.join(labels), data
+
+
+def parse_http_data(data):
+    global recent_domain
+
+    http_method, http_url, status_code = None, None, None
+    try:
+        decoded_data = data.decode('utf-8')
+    except UnicodeDecodeError:
+        return http_method, http_url, status_code
+    
+    if not decoded_data or decoded_data.isspace():
+        return http_method, http_url, status_code
+
+    # print(decoded_data)
+
+    lines = decoded_data.split('\r\n')
+    if lines:
+        request_line = lines[0].split(' ')
+        if len(request_line) >= 2:
+            http_method = request_line[0]
+            parsed_url = urlparse(request_line[1])
+
+            # HTTP(S) request
+            if not recent_domain:
+                recent_domain = parsed_url.netloc
+                http_url = recent_domain
+            # HTTP(S) response
+            else:
+                http_url = recent_domain
+                recent_domain = None
+
+        for line in lines:
+            if line.startswith('HTTP'):
+                status_parts = line.split(' ', 2)
+                status_code = status_parts[1]
+                if len(status_parts) > 2:
+                    status_code += ' ' + status_parts[2]
+
+            # Extract host from the "Host" header
+            host_match = re.match(r'Host:\s*(.*)', line)
+            if host_match:
+                recent_domain = host_match.group(1).strip()
+                http_url = recent_domain
+
+    # print(f"Method: {http_method}, URL: {http_url}, Status: {status_code}")
+    return http_method, http_url, status_code

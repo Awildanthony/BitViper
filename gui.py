@@ -54,14 +54,26 @@ class PacketSniffer(threading.Thread):
                     icmp_type, code, checksum, data = unpack_icmp(data)
                     eth_protocol = "ICMP"
                     hex_data = data
+
                 elif proto == 6:  # TCP
-                    src_port, dst_port, seq, ack, flag_urg, flag_ack, flag_psh, flag_rst, flag_syn, flag_fin, data = unpack_tcp(data)
+                    src_port, dst_port, seq, ack, flag_urg, flag_ack, flag_psh, flag_rst, flag_syn, flag_fin, http_method, http_url, status_code, data = unpack_tcp(data)
                     eth_protocol = "TCP"
                     hex_data = data
-                    try:
-                        data = f"{src_port} → {dst_port} [???] Seq={seq} Ack={flag_ack}".encode("utf-8").decode("utf-8")
-                    except UnicodeDecodeError:
-                        data = "Decoding error"
+
+                    # call to unpack_tcp() found HTTP(S) data
+                    if http_method and http_url:    
+                        if dst_port == 80 or src_port == 80:
+                            eth_protocol = "HTTP"
+                        if dst_port == 443 or src_port == 443:
+                            eth_protocol = "HTTPS"
+                        else:
+                            eth_protocol = "HTTP(S)"  # non-conventional port (unknown)
+                    else:   # non-HTTP and non-HTTPS packets
+                        try:
+                            non_http_data = f"{src_port} → {dst_port} [???] Seq={seq} Ack={ack} {data}".encode("utf-8").decode("utf-8")
+                        except UnicodeDecodeError:
+                            non_http_data = "Decoding error"
+                        data = non_http_data
 
                 elif proto == 17:  # UDP
                     src_port, dst_port, size, data = unpack_udp(data)
