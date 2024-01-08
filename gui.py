@@ -1,35 +1,60 @@
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import socket
 import time
 from sniffer import *
-import queue
-
+from scapy.all import wrpcap, Ether, rdpcap
+from queue import Queue
 
 # Constants
 MAX_PACKET_SIZE = 65535
 MAX_PACKET_QUEUE_SIZE = 1000
 SOCKET_TIMEOUT = 1
 
-
 class PacketSniffer(threading.Thread):
+    session_number_lock = threading.Lock()
+    first_launch = True
+
     def __init__(self, queue, lock):
         super().__init__()
         self.queue = queue
         self.lock = lock
         self.running = False
         self.hex_data = None
+        self.pcap_file = "captured_packets.pcap"
+        self.session_number, self.packet_number = self.load_last_sesh_and_packet_num()
+
+    def load_last_sesh_and_packet_num(self):
+        with PacketSniffer.session_number_lock:
+            try:
+                with open("session_number.txt", "r") as f:
+                    session_number = int(f.read().strip())
+            except FileNotFoundError:
+                # If the file doesn't exist, create it with the default session number
+                session_number = 1
+                with open("session_number.txt", "w") as f:
+                    f.write(str(session_number))
+            except Exception as e:
+                print(f"Error loading session number: {e}")
+                session_number = 1
+
+            if PacketSniffer.first_launch:
+                # Reset session number to 1 only on the first launch
+                session_number = 1
+                PacketSniffer.first_launch = False
+
+            return session_number, 0
 
     def run(self):
+        self.packet_number = 0
+
         # Establish a socket (OSI Layer 2, raw socket, all packets)
         connection = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(3))
 
         # Set a timeout to prevent blocking
         connection.settimeout(SOCKET_TIMEOUT)
 
-        # Start counters
-        packet_number = 0
         start_time = time.time()
 
         while self.running:
@@ -40,76 +65,120 @@ class PacketSniffer(threading.Thread):
                 # If recvfrom times out, just try again
                 continue
 
-            # Parse raw data from network frame into ethernet frame
-            dest_mac, src_mac, eth_proto, data = ethernet_frame(raw_data)
-            eth_protocol = eth_proto    # (default value)
-            self.hex_data = data        # (default value)
+            # Initialize packet_data with a default value
+            packet_data = (0, 0, "0.000000", "N/A", "N/A", "N/A", 0, "N/A")
 
-            # Check the Ethernet protocol and unpack accordingly
-            if eth_proto == "IPv4":
-                version, header_length, ttl, proto, src, target, data = unpack_ipv4(data)
+            try:
+                # Parse raw data from the network frame into an ethernet frame
+                dest_mac, src_mac, eth_proto, data = ethernet_frame(raw_data)
+                eth_protocol = eth_proto  # (default value)
+                self.hex_data = data  # (default value)
 
-                # Check the IPv4 protocol and unpack accordingly
-                if proto == 1:  # ICMP
-                    icmp_type, code, checksum, data = unpack_icmp(data)
-                    eth_protocol = "ICMP"
-                    hex_data = data
+                # Check the Ethernet protocol and unpack accordingly
+                if eth_proto == "IPv4":
+                    version, header_length, ttl, proto, src, target, data = unpack_ipv4(data)
 
-                elif proto == 6:  # TCP
-                    src_port, dst_port, seq, ack, flag_urg, flag_ack, flag_psh, flag_rst, flag_syn, flag_fin, http_method, http_url, status_code, data = unpack_tcp(data)
-                    eth_protocol = "TCP"
-                    hex_data = data
+                    # Check the IPv4 protocol and unpack accordingly
+                    if proto == 1:  # ICMP
+                        icmp_type, code, checksum, data = unpack_icmp(data)
+                        eth_protocol = "ICMP"
+                        hex_data = data
 
-                    # call to unpack_tcp() found HTTP(S) data
-                    if http_method and http_url:    
-                        if dst_port == 80 or src_port == 80:
-                            eth_protocol = "HTTP"
-                        if dst_port == 443 or src_port == 443:
-                            eth_protocol = "HTTPS"
-                        else:
-                            eth_protocol = "HTTP(S)"  # non-conventional port (unknown)
-                    else:   # non-HTTP and non-HTTPS packets
+                    elif proto == 6:  # TCP
+                        src_port, dst_port, seq, ack, flag_urg, flag_ack, flag_psh, flag_rst, flag_syn, flag_fin, http_method, http_url, status_code, data = unpack_tcp(data)
+                        eth_protocol = "TCP"
+                        hex_data = data
+
+                        # call to unpack_tcp() found HTTP(S) data
+                        if http_method and http_url:    
+                            if dst_port == 80 or src_port == 80:
+                                eth_protocol = "HTTP"
+                            if dst_port == 443 or src_port == 443:
+                                eth_protocol = "HTTPS"
+                            else:
+                                eth_protocol = "HTTP(S)"  # non-conventional port (unknown)
+                        else:   # non-HTTP and non-HTTPS packets
+                            try:
+                                non_http_data = f"{src_port} → {dst_port} [???] Seq={seq} Ack={ack} {data}".encode("utf-8").decode("utf-8")
+                            except UnicodeDecodeError:
+                                non_http_data = "Decoding error"
+                            data = non_http_data
+
+                    elif proto == 17:  # UDP
+                        src_port, dst_port, size, data = unpack_udp(data)
+                        eth_protocol = "UDP"
+                        hex_data = data
+
+                        # DNS
+                        if src_port == 53 or dst_port == 53:
+                            eth_protocol = "DNS"
+                            data = format_dns_data(data)
+
+                        else: # UDP (other)
+                            try:
+                                data = f"{src_port} → {dst_port} Len={size}".encode("utf-8").decode("utf-8")
+                            except UnicodeDecodeError:
+                                data = "Decoding error"
+
+                    else:  # IPv4 (other)
+                        eth_protocol = "IPv4"
+                        hex_data = data
+
+                # Increment packet number and get current time
+                self.packet_number += 1
+                current_time = "{:.6f}".format(time.time() - start_time)
+                current_time = current_time.ljust(8, '0')
+
+                # Use a lock to prevent simultaneous access
+                with self.lock:
+                    if not self.queue.full():
+                        packet_data = (self.session_number, 
+                                       self.packet_number, 
+                                       current_time,
+                                       src_mac,
+                                       dest_mac,
+                                       eth_protocol,
+                                       len(raw_data), data)
+
                         try:
-                            non_http_data = f"{src_port} → {dst_port} [???] Seq={seq} Ack={ack} {data}".encode("utf-8").decode("utf-8")
-                        except UnicodeDecodeError:
-                            non_http_data = "Decoding error"
-                        data = non_http_data
+                            self.queue.put(packet_data)
+                            wrpcap(self.pcap_file, Ether(raw_data), append=True)    # Write the packet to the pcap file
 
-                elif proto == 17:  # UDP
-                    src_port, dst_port, size, data = unpack_udp(data)
-                    eth_protocol = "UDP"
-                    hex_data = data
+                        except Exception as queue_error:
+                            print(f"Error adding packet to queue: {queue_error}")
 
-                    # DNS
-                    if src_port == 53 or dst_port == 53:
-                        eth_protocol = "DNS"
-                        data = format_dns_data(data)
+            except Exception as e:
+                print(f"Error processing packet: {e}")
+                print(f"Packet data: {packet_data}")
 
-                    else: # UDP (other)
-                        try:
-                            data = f"{src_port} → {dst_port} Len={size}".encode("utf-8").decode("utf-8")
-                        except UnicodeDecodeError:
-                            data = "Decoding error"
-
-                else:  # IPv4 (other)
-                    eth_protocol = "IPv4"
-                    hex_data = data
-
-            # Increment packet number and get current time
-            packet_number += 1
-            current_time = "{:.6f}".format(time.time() - start_time)
-            current_time = current_time.ljust(8, '0')
-
-            # Use a lock to prevent simultaneous access
-            with self.lock:
-                if not self.queue.full():
-                    # Queue in next row
-                    self.queue.put((packet_number, current_time, src_mac, dest_mac, eth_protocol, len(raw_data), data))
+    def get_captured_packets(self):
+        # Retrieve all captured packets from the queue
+        with self.lock:
+            captured_packets = list(self.captured_packets.queue)
+            self.captured_packets = Queue()     # Clear the queue after retrieval
+        return captured_packets
 
     def stop(self):
         self.running = False
         self.join()  # Wait for the thread to finish before stopping
+        self.session_number += 1
+        self.packet_number = 1
 
+        # Save the session number to a file
+        with open("session_number.txt", "w") as f:
+            f.write(str(self.session_number))
+
+    def get_packet_info(self):
+        return (
+            str(self.session_number),
+            str(self.packet_number),
+            "{:.6f}".format(time.time() - self.start_time),
+            str(self.src_mac),
+            str(self.dest_mac),
+            str(self.eth_protocol),
+            str(len(self.hex_data)),
+            self.hex_data,
+        )
 
 class SnifferGUI:
     def __init__(self, root, packet_queue, lock):
@@ -119,7 +188,11 @@ class SnifferGUI:
         self.sniffer = None
         self.sorting_column = None
         self.sorting_order = True   # Default sorting order is ascending
+        self.capture_running = False
         self.setup_ui()
+
+        # Cannot save as .pcap file if empty datatable
+        self.save_button.config(state=tk.DISABLED)
 
     def setup_ui(self):
         # Set launch header and window dimensions
@@ -140,6 +213,8 @@ class SnifferGUI:
         self.stop_button.pack(side=tk.LEFT, padx=5)
         self.clear_button = tk.Button(button_frame, text="Clear", command=self.clear_table, state=tk.DISABLED, bg="blue")
         self.clear_button.pack(side=tk.LEFT, padx=5)
+        self.save_button = tk.Button(button_frame, text="Save", command=self.save_packets)
+        self.save_button.pack(side=tk.RIGHT, padx=5)
 
         # Add a search bar
         search_frame = tk.Frame(self.root)
@@ -151,7 +226,8 @@ class SnifferGUI:
         search_button.pack(side=tk.LEFT)
 
         # Set header titles
-        self.tree = ttk.Treeview(self.root, columns=("No.", "Time", "Source", "Destination", "Protocol", "Length", "Data"), show="headings")
+        self.tree = ttk.Treeview(self.root, columns=("Sesh", "No.", "Time", "Source", "Destination", "Protocol", "Length", "Data"), show="headings")
+        self.tree.heading("Sesh", text="Sesh")
         self.tree.heading("No.", text="No.")
         self.tree.heading("Time", text="Time")
         self.tree.heading("Source", text="Source")
@@ -165,7 +241,14 @@ class SnifferGUI:
         screen_height = self.root.winfo_screenheight()
 
         # Set header titles with binding to enable sorting
-        for col, ratio in [("No.", 0.05), ("Time", 0.08), ("Source", 0.13), ("Destination", 0.13), ("Protocol", 0.08), ("Length", 0.08), ("Data", 0.35)]:
+        for col, ratio in [("Sesh", 0.03),  # width ratios should add up to 0.9 != 1.0, for some reason
+                           ("No.", 0.05), 
+                           ("Time", 0.08), 
+                           ("Source", 0.12), 
+                           ("Destination", 0.12), 
+                           ("Protocol", 0.08), 
+                           ("Length", 0.08), 
+                           ("Data", 0.34)]:
             self.tree.column(col, anchor="center", width=int(screen_width * ratio))
             self.tree.heading(col, text=col, anchor="center", command=lambda c=col: self.sort_treeview(c))
 
@@ -181,33 +264,100 @@ class SnifferGUI:
         self.update_gui()
 
     def start_sniffer(self):
-        self.sniffer = PacketSniffer(self.packet_queue, self.lock)
-        self.sniffer.running = True
-        self.sniffer.start()
+        if not self.sniffer or not self.sniffer.running:
+            # If the sniffer is not created or not running, create a new sniffer
+            self.sniffer = PacketSniffer(self.packet_queue, self.lock)
+
+            # Check if the 'first_launch' attribute exists in the sniffer class
+            if hasattr(PacketSniffer, 'first_launch'):
+                self.sniffer.first_launch = PacketSniffer.first_launch  # Pass the 'first_launch' value
+
+            self.sniffer.running = True
+            self.sniffer.start()
+
         self.start_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
         self.clear_button.config(state=tk.DISABLED)
+        self.save_button.config(state=tk.DISABLED)
+        self.capture_running = True
 
     def stop_sniffer(self):
         self.sniffer.stop()
+        self.sniffer = None  # Set to None to create a new instance on start
         self.start_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
+        self.capture_running = False
         if self.tree.get_children():
             self.clear_button.config(state=tk.NORMAL)
+            self.save_button.config(state=tk.NORMAL)
+        else:
+            self.clear_button.config(state=tk.DISABLED)
+            self.save_button.config(state=tk.DISABLED)
 
     def clear_table(self):
+        if self.sniffer:
+            self.sniffer.stop()
+            self.sniffer = None  # Set to None to create a new instance on start
+            self.start_button.config(state=tk.NORMAL)
+            self.stop_button.config(state=tk.DISABLED)
+            self.capture_running = False
         for i in self.tree.get_children():
             self.tree.delete(i)
         self.clear_button.config(state=tk.DISABLED)
+        self.save_button.config(state=tk.DISABLED)
+
+        # Reset the session number to 1
+        with PacketSniffer.session_number_lock:
+            self.session_number, self.packet_number = 1, 0
+            with open("session_number.txt", "w") as f:
+                f.write("1")
+    
+    def on_closing(self):
+        if self.sniffer:
+            self.sniffer.stop()
+        self.root.destroy()
+
+    def save_packets(self):
+        if self.tree.get_children():  # Check if there are packets in the datatable
+            try:
+                # Ask the user for the file name and location
+                file_path = tk.filedialog.asksaveasfilename(defaultextension=".pcap", filetypes=[("PCAP files", "*.pcap")])
+                if not file_path:
+                    return
+
+                # Write the captured packets to the specified file
+                captured_packets = list(self.packet_queue.queue)
+                wrpcap(file_path, [Ether(data) for _, _, _, _, _, _, data in captured_packets])
+
+                # Clear the packet_queue
+                while not self.packet_queue.empty():
+                    self.packet_queue.get()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Error saving packets: {str(e)}")
+        else:
+            # If the datatable is empty, show an info message
+            messagebox.showinfo("Info", "No packets to save.")
 
     def update_gui(self):
-        while not self.packet_queue.empty():
-            packet = self.packet_queue.get()
-            new_item = self.tree.insert("", "end", values=packet)
-            self.tree.see(new_item)
+        if self.sniffer:
+            while not self.packet_queue.empty():
+                packet = self.packet_queue.get()
+                try:
+                    packet_info = tuple(str(value) for value in packet)
+                    new_item = self.tree.insert("", "end", values=packet_info)
+                    self.tree.see(new_item)
+                except Exception as e:
+                    print(f"Error updating GUI: {e}")
+                    print(f"Packet values: {packet}")
+
             if not self.sniffer.running:
                 self.clear_button.config(state=tk.NORMAL)
-        self.root.after(1000, self.update_gui)
+                if self.tree.get_children():
+                    # Enable Save only if packets are in table and capture is currently off
+                    self.save_button.config(state=tk.NORMAL)
+
+        self.root.after(100, self.update_gui)
 
     def show_context_menu(self, event):
         item = self.tree.identify_row(event.y)  # Identify the item under the cursor
@@ -306,9 +456,13 @@ class SnifferGUI:
 
 def main():
     root = tk.Tk()
-    packet_queue = queue.Queue(maxsize=MAX_PACKET_QUEUE_SIZE)    # Set a maximum size for the queue
-    lock = threading.Lock()                                      # Create a lock for thread safety
+    packet_queue = Queue(maxsize=MAX_PACKET_QUEUE_SIZE)    # Set a maximum size for the queue
+    lock = threading.Lock()                                # Create a lock for thread safety
     gui = SnifferGUI(root, packet_queue, lock)
+
+    # Bind the on_closing method to the closing event
+    root.protocol("WM_DELETE_WINDOW", gui.on_closing)
+
     root.mainloop()
 
 
