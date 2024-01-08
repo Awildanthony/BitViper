@@ -215,6 +215,8 @@ class SnifferGUI:
         self.clear_button.pack(side=tk.LEFT, padx=5)
         self.save_button = tk.Button(button_frame, text="Save", command=self.save_packets)
         self.save_button.pack(side=tk.RIGHT, padx=5)
+        self.load_button = tk.Button(button_frame, text="Load", command=self.load_packets)
+        self.load_button.pack(side=tk.RIGHT, padx=5)
 
         # Add a search bar
         search_frame = tk.Frame(self.root)
@@ -279,6 +281,7 @@ class SnifferGUI:
         self.stop_button.config(state=tk.NORMAL)
         self.clear_button.config(state=tk.DISABLED)
         self.save_button.config(state=tk.DISABLED)
+        self.load_button.config(state=tk.DISABLED)
         self.capture_running = True
 
     def stop_sniffer(self):
@@ -290,9 +293,11 @@ class SnifferGUI:
         if self.tree.get_children():
             self.clear_button.config(state=tk.NORMAL)
             self.save_button.config(state=tk.NORMAL)
+            self.load_button.config(state=tk.NORMAL)
         else:
             self.clear_button.config(state=tk.DISABLED)
             self.save_button.config(state=tk.DISABLED)
+            self.load_button.config(state=tk.DISABLED)
 
     def clear_table(self):
         if self.sniffer:
@@ -327,7 +332,7 @@ class SnifferGUI:
 
                 # Write the captured packets to the specified file
                 captured_packets = list(self.packet_queue.queue)
-                wrpcap(file_path, [Ether(data) for _, _, _, _, _, _, data in captured_packets])
+                wrpcap(file_path, [Ether(data) for _, _, _, _, _, data in captured_packets])
 
                 # Clear the packet_queue
                 while not self.packet_queue.empty():
@@ -338,6 +343,68 @@ class SnifferGUI:
         else:
             # If the datatable is empty, show an info message
             messagebox.showinfo("Info", "No packets to save.")
+
+    def load_packets(self):
+        try:
+            # Prompt the user to select a .pcap file
+            file_path = tk.filedialog.askopenfilename(defaultextension=".pcap", filetypes=[("PCAP files", "*.pcap")])
+            if not file_path:
+                return
+
+            # Read the selected .pcap file using Scapy
+            packets = rdpcap(file_path)
+
+            # Extract relevant information from the loaded packets
+            captured_packets = []
+            for idx, packet in enumerate(packets, start=1):
+                try:
+                    dest_mac, src_mac, proto, data = ethernet_frame(bytes(packet))
+                    version, header_length, ttl, proto, src, target, data = unpack_ipv4(data)
+
+                    # .pcap files typically do not store session_number
+                    if hasattr(self.sniffer, 'session_number'):
+                        session_number = self.sniffer.session_number
+                    else:
+                        session_number = "#"
+
+                    # .pcap files typically do not store packet_number
+                    if hasattr(self.sniffer, 'packet_number'):
+                        index = self.sniffer.packet_number
+                    else:
+                        index = idx
+
+                    # .pcap files might not have a start_time attribute
+                    start_time = getattr(self.sniffer, 'start_time', 0.0)
+
+                    # Customize the extraction based on your packet structure
+                    packet_info = (
+                        session_number,
+                        index,
+                        "{:.6f}".format(time.time() - start_time),
+                        src_mac,
+                        dest_mac,
+                        proto,
+                        len(bytes(packet)),
+                        data
+                    )
+
+                    captured_packets.append(packet_info)
+
+                except Exception as e:
+                    print(f"Error extracting packet information: {str(e)}")
+
+            # Populate the data table with the extracted information
+            for packet_info in captured_packets:
+                new_item = self.tree.insert("", "end", values=packet_info)
+                self.tree.see(new_item)
+
+            # Enable the Save and Clear buttons, since there are now packets in the data table
+            self.save_button.config(state=tk.NORMAL)
+            self.clear_button.config(state=tk.NORMAL)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Error loading packets: {str(e)}")
+
 
     def update_gui(self):
         if self.sniffer:
@@ -353,6 +420,7 @@ class SnifferGUI:
 
             if not self.sniffer.running:
                 self.clear_button.config(state=tk.NORMAL)
+                self.load_button.config(state=tk.NORMAL)
                 if self.tree.get_children():
                     # Enable Save only if packets are in table and capture is currently off
                     self.save_button.config(state=tk.NORMAL)
