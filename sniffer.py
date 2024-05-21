@@ -30,7 +30,7 @@ DNS_TYPES = {
 }
 
 
-# Returns MAC as string from bytes (ie AA:BB:CC:DD:EE:FF)
+# Returns MAC as string from bytes (e.g., AA:BB:CC:DD:EE:FF)
 def get_mac_addr(mac_raw):
     byte_str = map('{:02x}'.format, mac_raw)
     mac_addr = ':'.join(byte_str).upper()
@@ -203,3 +203,9 @@ def parse_http_data(data):
 
     # print(f"Method: {http_method}, URL: {http_url}, Status: {status_code}")
     return http_method, http_url, status_code
+
+
+def filter_non_hex(string):
+    # possibility to not work properly if \ or x aren't used to designate a byte
+    # ... but icba
+    return ''.join(c for c in string if c in '0123456789abcdexfABCDEF\\\'')
