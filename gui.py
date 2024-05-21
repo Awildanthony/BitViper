@@ -6,11 +6,13 @@ import time
 from sniffer import *
 from scapy.all import wrpcap, Ether, rdpcap
 from queue import Queue
+import os
 
 # Constants
 MAX_PACKET_SIZE = 65535
 MAX_PACKET_QUEUE_SIZE = 1000
 SOCKET_TIMEOUT = 1
+UPDATES_PER_SECOND = 10
 
 class PacketSniffer(threading.Thread):
     session_number_lock = threading.Lock()
@@ -82,12 +84,12 @@ class PacketSniffer(threading.Thread):
                     if proto == 1:  # ICMP
                         icmp_type, code, checksum, data = unpack_icmp(data)
                         eth_protocol = "ICMP"
-                        hex_data = data
+                        self.hex_data = data
 
                     elif proto == 6:  # TCP
                         src_port, dst_port, seq, ack, flag_urg, flag_ack, flag_psh, flag_rst, flag_syn, flag_fin, http_method, http_url, status_code, data = unpack_tcp(data)
                         eth_protocol = "TCP"
-                        hex_data = data
+                        self.hex_data = data
 
                         # call to unpack_tcp() found HTTP(S) data
                         if http_method and http_url:    
@@ -100,29 +102,44 @@ class PacketSniffer(threading.Thread):
                         else:   # non-HTTP and non-HTTPS packets
                             try:
                                 non_http_data = f"{src_port} → {dst_port} [???] Seq={seq} Ack={ack} {data}".encode("utf-8").decode("utf-8")
-                            except UnicodeDecodeError:
-                                non_http_data = "Decoding error"
+                            except UnicodeDecodeError as error:
+                                non_http_data = "Decoding error:\n{}".format(error)
                             data = non_http_data
 
                     elif proto == 17:  # UDP
                         src_port, dst_port, size, data = unpack_udp(data)
                         eth_protocol = "UDP"
-                        hex_data = data
+                        self.hex_data = data
 
                         # DNS
-                        if src_port == 53 or dst_port == 53:
+                        if src_port in [53, 56710] or dst_port in [53, 56710]:
                             eth_protocol = "DNS"
                             data = format_dns_data(data)
 
                         else: # UDP (other)
                             try:
                                 data = f"{src_port} → {dst_port} Len={size}".encode("utf-8").decode("utf-8")
-                            except UnicodeDecodeError:
-                                data = "Decoding error"
+                            except UnicodeDecodeError as error:
+                                data = "Decoding error:\n{}".format(error)
 
                     else:  # IPv4 (other)
                         eth_protocol = "IPv4"
-                        hex_data = data
+                        self.hex_data = data
+
+                # DNS (non-IPv4)
+                elif eth_proto == "56710":
+                    try:
+                        src_port, dst_port, size, data = unpack_udp(data)
+                        self.hex_data = data
+                        data = format_dns_data(data)
+                    # TODO: fix this
+                    except Exception as buffer_error:
+                        eth_protocol = "DNS"
+                
+                # ARP
+                # TODO: implement this
+                elif eth_proto == "1544":
+                    eth_protocol = "ARP"
 
                 # Increment packet number and get current time
                 self.packet_number += 1
@@ -179,6 +196,8 @@ class PacketSniffer(threading.Thread):
             str(len(self.hex_data)),
             self.hex_data,
         )
+
+
 
 class SnifferGUI:
     def __init__(self, root, packet_queue, lock):
@@ -258,7 +277,7 @@ class SnifferGUI:
 
         # Initialize right-click menu
         self.context_menu = tk.Menu(self.root, tearoff=0)
-        self.context_menu.add_command(label="Show Raw Hex Data", command=self.show_raw_data)
+        self.context_menu.add_command(label="Inspect Payload", command=self.show_raw_data)
 
         # Bind the right-click event to the Treeview
         self.tree.bind("<Button-3>", self.show_context_menu)
@@ -320,6 +339,12 @@ class SnifferGUI:
     def on_closing(self):
         if self.sniffer:
             self.sniffer.stop()
+        # Delete the ICP files
+        try:
+            os.remove("session_number.txt")
+            os.remove("captured_packets.pcap")
+        except FileNotFoundError:
+            pass  # If the file doesn't exist, there's no need to delete it
         self.root.destroy()
 
     def save_packets(self):
@@ -358,8 +383,75 @@ class SnifferGUI:
             captured_packets = []
             for idx, packet in enumerate(packets, start=1):
                 try:
-                    dest_mac, src_mac, proto, data = ethernet_frame(bytes(packet))
-                    version, header_length, ttl, proto, src, target, data = unpack_ipv4(data)
+                    dest_mac, src_mac, eth_proto, data = ethernet_frame(bytes(packet))
+                    eth_protocol = eth_proto  # (default value)
+                    self.hex_data = data  # (default value)
+
+                    # Check the Ethernet protocol and unpack accordingly
+                    if eth_proto == "IPv4":
+                        version, header_length, ttl, proto, src, target, data = unpack_ipv4(data)
+
+                        # Check the IPv4 protocol and unpack accordingly
+                        if proto == 1:  # ICMP
+                            icmp_type, code, checksum, data = unpack_icmp(data)
+                            eth_protocol = "ICMP"
+                            self.hex_data = data
+
+                        elif proto == 6:  # TCP
+                            src_port, dst_port, seq, ack, flag_urg, flag_ack, flag_psh, flag_rst, flag_syn, flag_fin, http_method, http_url, status_code, data = unpack_tcp(data)
+                            eth_protocol = "TCP"
+                            self.hex_data = data
+
+                            # call to unpack_tcp() found HTTP(S) data
+                            if http_method and http_url:    
+                                if dst_port == 80 or src_port == 80:
+                                    eth_protocol = "HTTP"
+                                if dst_port == 443 or src_port == 443:
+                                    eth_protocol = "HTTPS"
+                                else:
+                                    eth_protocol = "HTTP(S)"  # non-conventional port (unknown)
+                            else:   # non-HTTP and non-HTTPS packets
+                                try:
+                                    non_http_data = f"{src_port} → {dst_port} [???] Seq={seq} Ack={ack} {data}".encode("utf-8").decode("utf-8")
+                                except UnicodeDecodeError:
+                                    non_http_data = "Decoding error"
+                                data = non_http_data
+
+                        elif proto == 17:  # UDP
+                            src_port, dst_port, size, data = unpack_udp(data)
+                            eth_protocol = "UDP"
+                            self.hex_data = data
+
+                            # DNS
+                            if src_port in [53, 56710] or dst_port in [53, 56710]:
+                                eth_protocol = "DNS"
+                                data = format_dns_data(data)
+
+                            else: # UDP (other)
+                                try:
+                                    data = f"{src_port} → {dst_port} Len={size}".encode("utf-8").decode("utf-8")
+                                except UnicodeDecodeError as error:
+                                    data = "Decoding error:\n{}".format(error)
+
+                        else:  # IPv4 (other)
+                            eth_protocol = "IPv4"
+                            self.hex_data = data
+
+                    # DNS (non-IPv4)
+                    elif eth_proto == "56710":
+                        try:
+                            src_port, dst_port, size, data = unpack_udp(data)
+                            eth_protocol = "DNS"
+                            self.hex_data = data
+                            data = format_dns_data(data)
+                        # TODO: fix this
+                        except Exception as buffer_error: 
+                            eth_protocol = "DNS"
+
+                    # ARP
+                    # TODO: implement this
+                    elif eth_proto == "1544":
+                        eth_protocol = "ARP"
 
                     # .pcap files typically do not store session_number
                     if hasattr(self.sniffer, 'session_number'):
@@ -383,7 +475,7 @@ class SnifferGUI:
                         "{:.6f}".format(time.time() - start_time),
                         src_mac,
                         dest_mac,
-                        proto,
+                        eth_protocol,
                         len(bytes(packet)),
                         data
                     )
@@ -425,7 +517,7 @@ class SnifferGUI:
                     # Enable Save only if packets are in table and capture is currently off
                     self.save_button.config(state=tk.NORMAL)
 
-        self.root.after(100, self.update_gui)
+        self.root.after(1000 // UPDATES_PER_SECOND, self.update_gui)
 
     def show_context_menu(self, event):
         item = self.tree.identify_row(event.y)  # Identify the item under the cursor
@@ -437,14 +529,25 @@ class SnifferGUI:
         if selected_item:
             values = self.tree.item(selected_item, 'values')
             if values:
-                packet_number, current_time, src_mac, dest_mac, proto, packet_length, _ = values
+                payload = values[-1]  # Assuming payload is the last item in values
+                if self.sniffer:  # Sniffer is running
+                    hex_data = self.sniffer.hex_data
+                else:  # Sniffer is stopped or data is imported
+                    # Extract the payload data from the displayed string
+                    start_index = payload.find("b'") + 2
+                    end_index = payload.find("'", start_index)
+                    hex_data_str = payload[start_index:end_index]
+                    # Filter out non-hexadecimal characters
+                    hex_data_str = filter_non_hex(hex_data_str)
+                    # Convert the payload data back to raw hex
+                    hex_data = bytes.fromhex(hex_data_str)
 
                 try:
                     # Try to decode as UTF-8
-                    hex_data = self.sniffer.hex_data.decode('utf-8')
+                    decoded_data = hex_data.decode('utf-8')
                 except UnicodeDecodeError:
                     # If decoding fails, display raw data as hexadecimal
-                    hex_data = ' '.join(f'{byte:02X}' for byte in self.sniffer.hex_data)
+                    decoded_data = ' '.join(f'{byte:02X}' for byte in hex_data)
 
                 # Create a Toplevel window for displaying raw data
                 raw_data_window = tk.Toplevel(self.root)
@@ -457,7 +560,7 @@ class SnifferGUI:
 
                 # Create a Text widget to display the raw data
                 text_widget = tk.Text(raw_data_window, wrap=tk.WORD)
-                text_widget.insert(tk.END, hex_data)
+                text_widget.insert(tk.END, decoded_data)
                 text_widget.pack(expand=True, fill=tk.BOTH)
 
                 # Set the text widget to read-only
@@ -469,16 +572,26 @@ class SnifferGUI:
 
     def update_format(self, format_type, text_widget):
         if format_type == "ASCII":
-            try:
-                # Try to decode as UTF-8, replacing non-printable characters
-                ascii_data = ''.join(chr(byte) if 32 <= byte < 127 else '.' for byte in self.sniffer.hex_data)
-            except UnicodeDecodeError:
-                # If decoding fails, display raw data as hexadecimal
-                ascii_data = ' '.join(f'{byte:02X}' for byte in self.sniffer.hex_data)
+            # Get the raw hex data string from the text widget
+            raw_hex_data_str = text_widget.get("1.0", tk.END).strip()
+            # Sniffer is running
+            if self.sniffer:
+                hex_data = self.sniffer.hex_data
+            # Sniffer is stopped or data is imported
+            else:
+                # Convert the raw hex data string to bytes
+                try:
+                    hex_data = bytes.fromhex(raw_hex_data_str)
+                except ValueError:
+                    # If the string is not valid hexadecimal, return
+                    return
 
-            # Display the ASCII data in the Text widget
+            # Decode the raw hex data to ASCII
+            ascii_data = ''.join(chr(byte) if 32 <= byte < 127 else '.' for byte in hex_data)
+
+            # Update the text widget with the ASCII data
             text_widget.config(state=tk.NORMAL)
-            text_widget.delete(1.0, tk.END)
+            text_widget.delete("1.0", tk.END)
             text_widget.insert(tk.END, ascii_data)
             text_widget.config(state=tk.DISABLED)
         else:
