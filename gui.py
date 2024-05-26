@@ -17,46 +17,40 @@ UPDATES_PER_SECOND = 10
 
 class PacketSniffer(threading.Thread):
     """
-    TODO
+    A class that extends threading.Thread to sniff packets 
+    from a network interface.
     """
-    session_number_lock = threading.Lock()
+    sesh_lock = threading.Lock()
     first_launch = True
+    session_number = 1
 
-    def __init__(self, queue, lock):
+    def __init__(self: 'PacketSniffer', queue, lock):
         super().__init__()
         self.queue = queue
         self.lock = lock
         self.running = False
         self.hex_data = None
         self.file_name = "captured_packets.pcap"
-        self.sesh_num, self.pkt_num = self.fetch_recent_row()
+        self.sesh_num = self.fetch_sesh_num()
+        self.packet_num = 0
 
-    # TODO: add precise function signature.
-    def fetch_recent_row(self):
+    def fetch_sesh_num(self: 'PacketSniffer') -> int:
         """
-        Return the session number and packet number of the last packet received.
+        Returns the session number of the most recent packet.
         """
-        # Get the current session while sniffer runs in parallel.
-        with PacketSniffer.session_number_lock:
+        # Get the current session while sniffer continues running.
+        with PacketSniffer.sesh_lock:
             try:
-                # Separate file used as IPC for session number.
-                with open('sesh_num.txt', 'r') as f:
-                    session_number = int(f.read().strip())
-            except FileNotFoundError:
-                session_number = 1
-                with open('sesh_num.txt', 'w') as f:
-                    f.write(str(session_number))
+                session_number = PacketSniffer.session_number
             except Exception as e:
                 print(f"Error loading session number: {e}")
                 session_number = 1
             if PacketSniffer.first_launch:
-                # Reset session number to 1 only on the first launch
                 session_number = 1
                 PacketSniffer.first_launch = False
-            return session_number, 0
+            return session_number
 
-    # TODO: add precise function signature.
-    def run(self):
+    def run(self: 'PacketSniffer') -> None:
         """
         Begin a live packet capture session.
         """
@@ -65,7 +59,7 @@ class PacketSniffer(threading.Thread):
                                    socket.SOCK_RAW,    # raw socket
                                    socket.ntohs(3))    # all packets
 
-        # Set a timeout to prevent blocking.
+        # Set a timeout to prevent the thread from blocking.
         connection.settimeout(SOCKET_TIMEOUT)
         start_time = time.time()
         self.pkt_num = 0
@@ -74,26 +68,27 @@ class PacketSniffer(threading.Thread):
             try:
                 # Read raw data of IP packet from socket, up to max size.
                 raw_data, addr = connection.recvfrom(MAX_PACKET_SIZE)
+                # addr = (NI name, ether proto #, pkt type, hatype, src MAC addr)
             except socket.timeout:
                 continue
 
             packet_data = (0, 0, '0.000000', 'N/A', 'N/A', 'N/A', 0, 'N/A')
             try:
-                # Parse raw data from the network frame into an ethernet frame,
-                # obtaining raw 'Protocol' and 'Data' columns.
-                dest_mac, src_mac, eth_proto, data = ethernet_frame(raw_data)
+                # Parse raw data from the network frame into an ethernet frame.
+                dest_mac, src_mac, eth_proto, raw_data = ethernet_frame(raw_data)
+                # Set defaults
                 eth_protocol = eth_proto
-                self.hex_data = data
+                self.hex_data = raw_data
 
                 # Check the Ethernet protocol and unpack accordingly
                 if eth_proto == 'IPv4':
                     version, header_length, ttl, \
-                        proto, src, target, data = unpack_ipv4(data)
+                        proto, src, target, data = unpack_ipv4(raw_data)
                     proto = get_proto_name(proto)
 
                     # Check the IPv4 protocol and unpack accordingly
                     if proto == 'ICMP':
-                        icmp_type, code, checksum, data = unpack_icmp(data)
+                        icmp_type, code, checksum, data = unpack_icmp(raw_data)
                         eth_protocol = 'ICMP'
                         self.hex_data = data
 
@@ -101,7 +96,7 @@ class PacketSniffer(threading.Thread):
                         # Omitted flags: urg, ack, psh, rst, syn, fin.
                         src_port, dst_port, seq, ack, _, _, _, _, _, _, \
                             http_method, http_url, \
-                            status_code, data = unpack_tcp(data)
+                            status_code, data = unpack_tcp(raw_data)
                         eth_protocol = 'TCP'
                         self.hex_data = data
 
@@ -124,7 +119,7 @@ class PacketSniffer(threading.Thread):
                             data = non_http_data
 
                     elif proto == 'UDP':
-                        src_port, dst_port, size, data = unpack_udp(data)
+                        src_port, dst_port, size, data = unpack_udp(raw_data)
                         eth_protocol = 'UDP'
                         self.hex_data = data
 
@@ -142,12 +137,12 @@ class PacketSniffer(threading.Thread):
 
                     else:  # IPv4 (other)
                         eth_protocol = 'IPv4'
-                        self.hex_data = data
+                        self.hex_data = raw_data
 
                 # DNS (non-IPv4)
                 elif eth_proto == '56710':
                     try:
-                        src_port, dst_port, size, data = unpack_udp(data)
+                        src_port, dst_port, size, data = unpack_udp(raw_data)
                         self.hex_data = data
                         data = format_dns_data(data)
                     # TODO: fix this
@@ -187,24 +182,34 @@ class PacketSniffer(threading.Thread):
                 print(f"Error processing packet: {e}")
                 print(f"Packet data: {packet_data}")
 
+    # TODO: add precise function signature.
     def get_captured_packets(self):
+        """
+        TODO
+        """
         # Retrieve all captured packets from the queue
         with self.lock:
             captured_packets = list(self.captured_packets.queue)
             self.captured_packets = Queue()     # Clear the queue after retrieval
         return captured_packets
 
+    # TODO: add precise function signature.
     def stop(self):
+        """
+        TODO
+        """
         self.running = False
         self.join()  # Wait for the thread to finish before stopping
         self.sesh_num += 1
         self.pkt_num = 1
+        with PacketSniffer.sesh_lock:
+            PacketSniffer.session_number = self.sesh_num
 
-        # Save the session number to a file
-        with open('sesh_num.txt', 'w') as f:
-            f.write(str(self.sesh_num))
-
+    # TODO: add precise function signature.
     def get_packet_info(self):
+        """
+        TODO
+        """
         return (
             str(self.sesh_num),
             str(self.pkt_num),
@@ -219,20 +224,27 @@ class PacketSniffer(threading.Thread):
 
 
 class SnifferGUI:
-    def __init__(self, root, packet_queue, lock):
-        self.root = root
+    """
+    TODO
+    """
+    def __init__(self: 'SnifferGUI', root_window, packet_queue, thread_lock):
+        self.root = root_window
         self.packet_queue = packet_queue
-        self.lock = lock
+        self.lock = thread_lock
         self.sniffer = None
         self.sorting_column = None
-        self.sorting_order = True   # Default sorting order is ascending
+        self.sorting_order = True   # Ascending by default
         self.capture_running = False
         self.setup_ui()
 
         # Cannot save as .pcap file if empty datatable
         self.save_button.config(state=tk.DISABLED)
 
+    # TODO: add precise function signature.
     def setup_ui(self):
+        """
+        TODO
+        """
         # Set launch header and window dimensions
         self.root.title('SocketSloth')
         self.root.geometry('2650x1000')
@@ -326,7 +338,11 @@ class SnifferGUI:
 
         self.update_gui()
 
+    # TODO: add precise function signature.
     def start_sniffer(self):
+        """
+        TODO
+        """
         if not self.sniffer or not self.sniffer.running:
             # If the sniffer is not created or not running, create a new sniffer
             self.sniffer = PacketSniffer(self.packet_queue, self.lock)
@@ -346,7 +362,11 @@ class SnifferGUI:
         self.load_button.config(state=tk.DISABLED)
         self.capture_running = True
 
+    # TODO: add precise function signature.
     def stop_sniffer(self):
+        """
+        TODO
+        """
         self.sniffer.stop()
         self.sniffer = None  # Set to None to create a new instance on start
         self.start_button.config(state=tk.NORMAL)
@@ -361,7 +381,11 @@ class SnifferGUI:
             self.save_button.config(state=tk.DISABLED)
             self.load_button.config(state=tk.DISABLED)
 
+    # TODO: add precise function signature.
     def clear_table(self):
+        """
+        TODO
+        """
         if self.sniffer:
             self.sniffer.stop()
             self.sniffer = None  # Set to None to create a new instance on start
@@ -372,25 +396,27 @@ class SnifferGUI:
             self.tree.delete(i)
         self.clear_button.config(state=tk.DISABLED)
         self.save_button.config(state=tk.DISABLED)
-
-        # Reset the session number to 1
-        with PacketSniffer.session_number_lock:
-            self.sesh_num, self.pkt_num = 1, 0
-            with open('sesh_num.txt', 'w') as f:
-                f.write("1")
+        with PacketSniffer.sesh_lock:
+            PacketSniffer.sesh_num = 1
+            PacketSniffer.pkt_num = 0
     
     def on_closing(self):
+        """
+        TODO
+        """
         if self.sniffer:
             self.sniffer.stop()
-        # Delete the ICP files
         try:
-            os.remove('sesh_num.txt')
             os.remove('captured_packets.pcap')
         except FileNotFoundError:
-            pass  # If the file doesn't exist, there's no need to delete it
+            pass
         self.root.destroy()
 
+    # TODO: add precise function signature.
     def save_packets(self):
+        """
+        TODO
+        """
         if self.tree.get_children():  # Check if there are packets in the datatable
             try:
                 # Ask the user for the file name and location
@@ -415,7 +441,11 @@ class SnifferGUI:
             # If the datatable is empty, show an info message
             messagebox.showinfo('Info', "No packets to save.")
 
+    # TODO: add precise function signature.
     def load_packets(self):
+        """
+        TODO
+        """
         try:
             # Prompt the user to select a .pcap file
             file_path = tk.filedialog.askopenfilename(defaultextension='.pcap', 
@@ -554,8 +584,11 @@ class SnifferGUI:
         except Exception as e:
             messagebox.showerror('Error', f"Error loading packets: {str(e)}")
 
-
+    # TODO: add precise function signature.
     def update_gui(self):
+        """
+        TODO
+        """
         if self.sniffer:
             while not self.packet_queue.empty():
                 packet = self.packet_queue.get()
@@ -576,12 +609,20 @@ class SnifferGUI:
 
         self.root.after(1000 // UPDATES_PER_SECOND, self.update_gui)
 
+    # TODO: add precise function signature.
     def show_context_menu(self, event):
+        """
+        TODO
+        """
         item = self.tree.identify_row(event.y)  # Identify the item under the cursor
         if item:
             self.context_menu.post(event.x_root, event.y_root)
 
+    # TODO: add precise function signature.
     def show_raw_data(self):
+        """
+        TODO
+        """
         selected_item = self.tree.selection()
         if selected_item:
             values = self.tree.item(selected_item, 'values')
@@ -632,7 +673,11 @@ class SnifferGUI:
                                                 self.update_format(x, text_widget))
                 format_menu.pack()
 
+    # TODO: add precise function signature.
     def update_format(self, format_type, text_widget):
+        """
+        TODO
+        """
         if format_type == 'ASCII':
             # Get the raw hex data string from the text widget
             raw_hex_data_str = text_widget.get('1.0', tk.END).strip()
@@ -664,7 +709,11 @@ class SnifferGUI:
                                ' '.join(f'{byte:02X}' for byte in self.sniffer.hex_data))
             text_widget.config(state=tk.DISABLED)
 
+    # TODO: add precise function signature.
     def sort_treeview(self, col):
+        """
+        TODO
+        """
         # Check if we're sorting the same column
         if self.sorting_column == col:
             # Toggle sorting order
@@ -683,7 +732,11 @@ class SnifferGUI:
         # Update sorting column
         self.sorting_column = col
     
+    # TODO: add precise function signature.
     def apply_search(self):
+        """
+        TODO
+        """
         # Convert the query to lowercase for case-insensitive search.
         query = self.search_entry.get().lower()
         matching_items = []
@@ -700,15 +753,15 @@ class SnifferGUI:
 
 
 def main():
-    root = tk.Tk()
-    packet_queue = Queue(maxsize=MAX_PACKET_QUEUE_SIZE)  # Set a max size for queue
-    lock = threading.Lock()                              # Create a lock for threads
-    gui = SnifferGUI(root, packet_queue, lock)
+    root_window = tk.Tk()
+    packet_queue = Queue(maxsize=MAX_PACKET_QUEUE_SIZE)
+    thread_lock = threading.Lock()
+    gui = SnifferGUI(root_window, packet_queue, thread_lock)
 
     # Bind the on_closing method to the closing event
-    root.protocol('WM_DELETE_WINDOW', gui.on_closing)
+    root_window.protocol('WM_DELETE_WINDOW', gui.on_closing)
 
-    root.mainloop()
+    root_window.mainloop()
 
 
 if __name__ == '__main__':

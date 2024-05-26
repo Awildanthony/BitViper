@@ -67,10 +67,10 @@ def get_mac_addr(mac_raw):
     mac_addr = ':'.join(byte_str).upper()
     return mac_addr
 
-# TODO: add precise function signature.
-def ethernet_frame(data):
+def ethernet_frame(data: bytes) -> tuple[str, str, str, bytes]:
     """
-    TODO
+    Unpacks an Ethernet frame to extract the destination MAC address, 
+    source MAC address, protocol name, and payload data.
     """
     dest_mac, src_mac, proto = struct.unpack("! 6s 6s H", data[:14])
     proto_name = PORT_TO_PROTOCOL.get(socket.htons(proto), 
