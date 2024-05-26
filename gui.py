@@ -20,14 +20,15 @@ class PacketSniffer(threading.Thread):
     A class that extends threading.Thread to sniff packets 
     from a network interface.
     """
+
     sesh_lock = threading.Lock()
     first_launch = True
     session_number = 1
 
-    def __init__(self: 'PacketSniffer', queue, lock):
+    def __init__(self: 'PacketSniffer', packet_queue, thread_lock):
         super().__init__()
-        self.queue = queue
-        self.lock = lock
+        self.queue = packet_queue
+        self.lock = thread_lock
         self.running = False
         self.hex_data = None
         self.file_name = "captured_packets.pcap"
@@ -37,8 +38,8 @@ class PacketSniffer(threading.Thread):
     def fetch_sesh_num(self: 'PacketSniffer') -> int:
         """
         Returns the session number of the most recent packet.
+        Grabs the sesh_lock to maintain thread safety.
         """
-        # Get the current session while sniffer continues running.
         with PacketSniffer.sesh_lock:
             try:
                 session_number = PacketSniffer.session_number
@@ -52,7 +53,8 @@ class PacketSniffer(threading.Thread):
 
     def run(self: 'PacketSniffer') -> None:
         """
-        Begin a live packet capture session.
+        Starts a live packet capture session, listening on an
+        open raw socket for all packets across the data link layer.
         """
         # Establish a socket.
         connection = socket.socket(socket.AF_PACKET,   # data link layer
@@ -83,61 +85,52 @@ class PacketSniffer(threading.Thread):
                 # Check the Ethernet protocol and unpack accordingly
                 if eth_proto == 'IPv4':
                     version, header_length, ttl, \
-                        proto, src, target, data = unpack_ipv4(raw_data)
+                        proto, src, target, ipv4_data = unpack_ipv4(raw_data)
                     proto = get_proto_name(proto)
 
                     # Check the IPv4 protocol and unpack accordingly
                     if proto == 'ICMP':
-                        icmp_type, code, checksum, data = unpack_icmp(raw_data)
-                        eth_protocol = 'ICMP'
+                        icmp_type, code, checksum, data = unpack_icmp(ipv4_data)
+                        eth_protocol = "ICMP"
                         self.hex_data = data
 
                     elif proto == 'TCP':
-                        # Omitted flags: urg, ack, psh, rst, syn, fin.
-                        src_port, dst_port, seq, ack, _, _, _, _, _, _, \
-                            http_method, http_url, \
-                            status_code, data = unpack_tcp(raw_data)
-                        eth_protocol = 'TCP'
+                        src_port, dst_port, seq, ack, f_urg, f_ack, f_psh, f_rst, f_syn, f_fin, \
+                            http_method, http_url, status_code, data = unpack_tcp(ipv4_data)
+                        tcp_flags = set_tcp_flags(f_urg, f_ack, f_psh, f_rst, f_syn, f_fin)
+                        eth_protocol = "TCP"
                         self.hex_data = data
 
                         # Call to `unpack_tcp()` found HTTP(S) data.
                         if http_method and http_url:
                             dst_port = get_proto_name(dst_port) 
-                            if digits_in(dst_port):
-                                # This is a non-conventional port (unknown).
-                                eth_protocol = 'HTTP(S)'
-                            else:
-                                eth_protocol = dst_port
+                            # Check if from a non-conventional port for HTTP(S).
+                            eth_protocol = "HTTP(S)" if digits_in(dst_port) else dst_port
                         else:
                             try:
-                                non_http_data = (f'{src_port} → '
-                                                 f'{dst_port} [???] Seq={seq} '
-                                                 f'Ack={ack} {data}'
-                                                ).encode('utf-8').decode('utf-8')
+                                data = f"{src_port} → {dst_port} {tcp_flags} Seq={seq} Ack={ack} {data}"
                             except UnicodeDecodeError as error:
-                                non_http_data = "Decoding error:\n{}".format(error)
-                            data = non_http_data
+                                data = "Decoding error:\n{}".format(error)
 
                     elif proto == 'UDP':
-                        src_port, dst_port, size, data = unpack_udp(raw_data)
-                        eth_protocol = 'UDP'
+                        src_port, dst_port, size, data = unpack_udp(ipv4_data)
+                        eth_protocol = "UDP"
                         self.hex_data = data
 
                         # DNS
                         if src_port in [53, 56710] or dst_port in [53, 56710]:
-                            eth_protocol = 'DNS'
+                            eth_protocol = "DNS"
                             data = format_dns_data(data)
 
                         else: # UDP (other)
                             try:
-                                data = (f'{src_port} → {dst_port} Len={size}'
-                                        ).encode('utf-8').decode('utf-8')
+                                data = f'{src_port} → {dst_port} Len={size}'
                             except UnicodeDecodeError as error:
                                 data = "Decoding error:\n{}".format(error)
 
                     else:  # IPv4 (other)
-                        eth_protocol = 'IPv4'
-                        self.hex_data = raw_data
+                        eth_protocol = "IPv4"
+                        self.hex_data = ipv4_data
 
                 # DNS (non-IPv4)
                 elif eth_proto == '56710':
@@ -147,12 +140,12 @@ class PacketSniffer(threading.Thread):
                         data = format_dns_data(data)
                     # TODO: fix this
                     except Exception as buffer_error:
-                        eth_protocol = 'DNS'
+                        eth_protocol = "DNS"
                 
                 # ARP
                 # TODO: implement this
                 elif eth_proto == '1544':
-                    eth_protocol = 'ARP'
+                    eth_protocol = "ARP"
 
                 # Increment packet number and get current time
                 self.pkt_num += 1
@@ -168,8 +161,8 @@ class PacketSniffer(threading.Thread):
                                        src_mac,
                                        dest_mac,
                                        eth_protocol,
-                                       len(raw_data), data)
-
+                                       len(raw_data), 
+                                       data)
                         try:
                             self.queue.put(packet_data)
                             # Write the packet to the pcap file.
@@ -182,45 +175,18 @@ class PacketSniffer(threading.Thread):
                 print(f"Error processing packet: {e}")
                 print(f"Packet data: {packet_data}")
 
-    # TODO: add precise function signature.
-    def get_captured_packets(self):
+    def stop(self: 'PacketSniffer') -> None:
         """
-        TODO
-        """
-        # Retrieve all captured packets from the queue
-        with self.lock:
-            captured_packets = list(self.captured_packets.queue)
-            self.captured_packets = Queue()     # Clear the queue after retrieval
-        return captured_packets
-
-    # TODO: add precise function signature.
-    def stop(self):
-        """
-        TODO
+        Stops the live packet capture session. Waits until the
+        current thread finishes processing them to avoid loss.
         """
         self.running = False
-        self.join()  # Wait for the thread to finish before stopping
-        self.sesh_num += 1
+        # Block calling thread until current thread terminates.
+        self.join()
         self.pkt_num = 1
+        self.sesh_num += 1
         with PacketSniffer.sesh_lock:
             PacketSniffer.session_number = self.sesh_num
-
-    # TODO: add precise function signature.
-    def get_packet_info(self):
-        """
-        TODO
-        """
-        return (
-            str(self.sesh_num),
-            str(self.pkt_num),
-            '{:.6f}'.format(time.time() - self.start_time),
-            str(self.src_mac),
-            str(self.dest_mac),
-            str(self.eth_protocol),
-            str(len(self.hex_data)),
-            self.hex_data,
-        )
-
 
 
 class SnifferGUI:
@@ -229,7 +195,7 @@ class SnifferGUI:
     """
     def __init__(self: 'SnifferGUI', root_window, packet_queue, thread_lock):
         self.root = root_window
-        self.packet_queue = packet_queue
+        self.queue = packet_queue
         self.lock = thread_lock
         self.sniffer = None
         self.sorting_column = None
@@ -345,7 +311,7 @@ class SnifferGUI:
         """
         if not self.sniffer or not self.sniffer.running:
             # If the sniffer is not created or not running, create a new sniffer
-            self.sniffer = PacketSniffer(self.packet_queue, self.lock)
+            self.sniffer = PacketSniffer(self.queue, self.lock)
 
             # Check if the 'first_launch' attribute exists in the sniffer class
             if hasattr(PacketSniffer, 'first_launch'):
@@ -397,8 +363,7 @@ class SnifferGUI:
         self.clear_button.config(state=tk.DISABLED)
         self.save_button.config(state=tk.DISABLED)
         with PacketSniffer.sesh_lock:
-            PacketSniffer.sesh_num = 1
-            PacketSniffer.pkt_num = 0
+            PacketSniffer.session_number = 1
     
     def on_closing(self):
         """
@@ -427,13 +392,13 @@ class SnifferGUI:
                     return
 
                 # Write the captured packets to the specified file
-                captured_packets = list(self.packet_queue.queue)
+                captured_packets = list(self.queue.queue)
                 wrpcap(file_path, 
                        [Ether(data) for _, _, _, _, _, data in captured_packets])
 
                 # Clear the packet_queue
-                while not self.packet_queue.empty():
-                    self.packet_queue.get()
+                while not self.queue.empty():
+                    self.queue.get()
 
             except Exception as e:
                 messagebox.showerror("Error", f"Error saving packets: {str(e)}")
@@ -556,16 +521,14 @@ class SnifferGUI:
                     start_time = getattr(self.sniffer, 'start_time', 0.0)
 
                     # Customize the extraction based on your packet structure
-                    packet_info = (
-                        session_number,
-                        index,
-                        '{:.6f}'.format(time.time() - start_time),
-                        src_mac,
-                        dest_mac,
-                        eth_protocol,
-                        len(bytes(packet)),
-                        data
-                    )
+                    packet_info = (session_number,
+                                   index,
+                                   "{:.6f}".format(time.time() - start_time),
+                                   src_mac,
+                                   dest_mac,
+                                   eth_protocol,
+                                   len(bytes(packet)),
+                                   data)
 
                     captured_packets.append(packet_info)
 
@@ -590,8 +553,8 @@ class SnifferGUI:
         TODO
         """
         if self.sniffer:
-            while not self.packet_queue.empty():
-                packet = self.packet_queue.get()
+            while not self.queue.empty():
+                packet = self.queue.get()
                 try:
                     packet_info = tuple(str(value) for value in packet)
                     new_item = self.tree.insert("", 'end', values=packet_info)

@@ -86,15 +86,8 @@ def unpack_ipv4(data):
     version = version_header_length >> 4
     header_length = (version_header_length & 15) * 4
     ttl, proto, src, target = struct.unpack("! 8x B B 2x 4s 4s", data[:20])
-    return version, header_length, ttl, proto, \
-           format_ipv4(src), format_ipv4(target), data[header_length:]
-
-# TODO: add precise function signature.
-def format_ipv4(addr):
-    """
-    TODO
-    """
-    return '.'.join(map(str, addr))
+    return version, header_length, ttl, proto, ".".join(map(str, src)), \
+           ".".join(map(str, target)), data[header_length:]
 
 # TODO: add precise function signature.
 def unpack_icmp(data):
@@ -135,6 +128,17 @@ def unpack_tcp(data):
            flag_ack, flag_psh, flag_rst, flag_syn, \
            flag_fin, http_method, http_url, status_code, data
 
+def set_tcp_flags(urg, ack, psh, rst, syn, fin):
+    """
+    Takes in the TCP flags as arguments and returns a string 
+    containing the names of the flags that are set.
+    """
+    flags = [urg, ack, psh, rst, syn, fin]
+    flag_names = ["URG", "ACK", "PSH", "RST", "SYN", "FIN"]
+    set_flags = [flag_names[i] for i in range(len(flags)) if flags[i] == 1]
+    return "[" + ", ".join(set_flags) + "]"
+
+
 # TODO: add precise function signature.
 def unpack_udp(data):
     """
@@ -148,15 +152,11 @@ def format_dns_data(dns_data):
     """
     TODO
     """
-    transaction_id, flags, questions, \
-        answer_rrs, authority_rrs,    \
+    transaction_id, flags, questions, answer_rrs, authority_rrs, \
         additional_rrs = struct.unpack('! H H H H H H', dns_data[:12])
     data = dns_data[12:]
-
     q_name, q_type, q_class, data = parse_dns_question(data)
-
     q_type = DNS_TYPES.get(q_type, q_type)
-
     answers = []
     cnames = ''
     for _ in range(answer_rrs):
