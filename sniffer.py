@@ -2,6 +2,7 @@ import re
 import socket
 import struct
 from urllib.parse import urlparse
+from typing import Optional, Union
 
 
 # Most recent HTTP(S) domain name.
@@ -58,27 +59,24 @@ def digits_in(s: str) -> bool:
     """
     return any(character.isdigit() for character in s)
 
-# TODO: add precise function signature.
-def get_mac_addr(mac_raw):
+def str_mac(mac_addr: bytes) -> str:
     """
-    Returns `mac_raw` MAC address as a string.
+    Converts `mac_addr` from bytes to a string.
     """
-    byte_str = map('{:02x}'.format, mac_raw)
-    mac_addr = ':'.join(byte_str).upper()
-    return mac_addr
+    byte_str = map('{:02x}'.format, mac_addr)
+    mac_str = ':'.join(byte_str).upper()
+    return mac_str
 
-def ethernet_frame(data: bytes) -> tuple[str, str, str, bytes]:
+def ethernet_frame(header_data: bytes) -> tuple[str, str, str, bytes]:
     """
     Unpacks an Ethernet frame to extract the destination MAC address, 
     source MAC address, protocol name, and payload data.
     """
-    dest_mac, src_mac, proto = struct.unpack("! 6s 6s H", data[:14])
-    proto_name = PORT_TO_PROTOCOL.get(socket.htons(proto), 
-                                      str(socket.htons(proto)))
-    return get_mac_addr(dest_mac), get_mac_addr(src_mac), proto_name, data[14:]
+    dest_mac, src_mac, proto = struct.unpack("! 6s 6s H", header_data[:14])
+    proto_name = PORT_TO_PROTOCOL.get(socket.htons(proto), str(socket.htons(proto)))
+    return str_mac(dest_mac), str_mac(src_mac), proto_name, header_data[14:]
 
-# TODO: add precise function signature.
-def unpack_ipv4(data):
+def unpack_ipv4(data: bytes) -> tuple[int, int, int, int, str, str, bytes]:
     """
     TODO
     """
@@ -86,47 +84,48 @@ def unpack_ipv4(data):
     version = version_header_length >> 4
     header_length = (version_header_length & 15) * 4
     ttl, proto, src, target = struct.unpack("! 8x B B 2x 4s 4s", data[:20])
-    return version, header_length, ttl, proto, ".".join(map(str, src)), \
-           ".".join(map(str, target)), data[header_length:]
+    src, target = ".".join(map(str, src)), ".".join(map(str, target))
+    return version, header_length, ttl, proto, src, target, data[header_length:]
 
-# TODO: add precise function signature.
-def unpack_icmp(data):
+def unpack_icmp(data: bytes) -> tuple[int, int, int, bytes]:
     """
     TODO
     """
     icmp_type, code, checksum = struct.unpack("! B B H", data[:4])
     return icmp_type, code, checksum, data[4:]
 
-# TODO: add precise function signature.
-def unpack_tcp(data):
+def unpack_tcp(data: bytes) -> tuple[int, int, int, int, int, int, int, int, int, int, 
+                                     Optional[str], Optional[str], Optional[str], str]:
     """
     TODO
     """
-    src_port, dst_port, seq, \
-        ack, offset_reserved_flags = struct.unpack("! H H L L H", data[:14])
-    offset = (offset_reserved_flags >> 12) * 4
-    flag_urg = (offset_reserved_flags & 32) >> 5
-    flag_ack = (offset_reserved_flags & 16) >> 4
-    flag_psh = (offset_reserved_flags & 8) >> 3
-    flag_rst = (offset_reserved_flags & 4) >> 2
-    flag_syn = (offset_reserved_flags & 2) >> 1
-    flag_fin = (offset_reserved_flags & 1)
+    # Unpack the TCP packet according to its known architecture.
+    src_port, dst_port, seq, ack, tcp_flags = struct.unpack("! H H L L H", data[:14])
+
+    # Reserved TCP flags are offset; un-offset them.
+    offset = (tcp_flags >> 12) * 4
+    flag_urg = (tcp_flags & 32) >> 5
+    flag_ack = (tcp_flags & 16) >> 4
+    flag_psh = (tcp_flags & 8) >> 3
+    flag_rst = (tcp_flags & 4) >> 2
+    flag_syn = (tcp_flags & 2) >> 1
+    flag_fin = (tcp_flags & 1)
 
     # Checking conventional ports (e.g., 80/443 for HTTP(S) data) is a
-    # necessary but not sufficient condition for supporting that protocol.
-    http_method, http_url, status_code = None, None, None
+    # necessary but not sufficient condition for supporting said protocol.
     http_method, http_url, status_code = parse_http_data(data[offset:])
 
     # Packet contains HTTP(S) data; distinguish response vs request.
+    display_data = ""
     if http_method and http_url:
         if status_code:
-            data = f"{http_method} {http_url} {status_code}"
+            display_data = f"{http_method} {http_url} {status_code}"
         else:
-            data = f"{http_method} {http_url}"
+            display_data = f"{http_method} {http_url}"
 
-    return src_port, dst_port, seq, ack, flag_urg, \
-           flag_ack, flag_psh, flag_rst, flag_syn, \
-           flag_fin, http_method, http_url, status_code, data
+    return src_port, dst_port, seq, ack, \
+           flag_urg, flag_ack, flag_psh, flag_rst, flag_syn, flag_fin, \
+           http_method, http_url, status_code, display_data
 
 def set_tcp_flags(urg, ack, psh, rst, syn, fin):
     """
@@ -139,16 +138,14 @@ def set_tcp_flags(urg, ack, psh, rst, syn, fin):
     return "[" + ", ".join(set_flags) + "]"
 
 
-# TODO: add precise function signature.
-def unpack_udp(data):
+def unpack_udp(data: bytes) -> tuple[int, int, int, bytes]:
     """
     TODO
     """
     src_port, dst_port, size = struct.unpack("! H H 2x H", data[:8])
     return src_port, dst_port, size, data[8:]
 
-# TODO: add precise function signature.
-def format_dns_data(dns_data):
+def format_dns_data(dns_data: bytes) -> str:
     """
     TODO
     """
@@ -160,7 +157,7 @@ def format_dns_data(dns_data):
     answers = []
     cnames = ''
     for _ in range(answer_rrs):
-        a_type, answer, data = parse_dns_answer(data)
+        a_type, data, answer = parse_dns_answer(data)
         answers.append(answer)
         if get_dns_type(answer['Type']) == "CNAME":
             cnames += f' CNAME {answer["RD Data"]}'
@@ -172,34 +169,7 @@ def format_dns_data(dns_data):
         return (f'Standard query 0x{transaction_id:04X} '
                 f'{q_type} {q_name}{cnames}')
 
-# TODO: add precise function signature.
-def parse_dns_question(data):
-    """
-    TODO
-    """
-    q_name, data = parse_dns_name(data)
-    q_type, q_class = struct.unpack('! H H', data[:4])
-    return q_name, q_type, q_class, data[4:]
-
-# TODO: add precise function signature.
-def parse_dns_answer(data):
-    """
-    TODO
-    """
-    a_name, data = parse_dns_name(data)
-    a_type, a_class, a_ttl, a_rdlength = struct.unpack('! H H I H', data[:10])
-    a_rdata, data = data[10:10 + a_rdlength], data[10 + a_rdlength:]
-    if get_dns_type(a_type) == "CNAME":
-        a_rdata = parse_dns_name(a_rdata)[0]
-    return a_type, {'Name': a_name, 
-                    'Type': a_type, 
-                    'Class': a_class, 
-                    'TTL': a_ttl, 
-                    'RD Length': a_rdlength, 
-                    'RD Data': a_rdata}, data
-
-# TODO: add precise function signature.
-def parse_dns_name(data):
+def parse_dns_name(data: bytes) -> tuple[str, bytes]:
     """
     TODO
     """
@@ -225,8 +195,31 @@ def parse_dns_name(data):
             data = data[1 + length:]
     return '.'.join(labels), data
 
-# TODO: add precise function signature.
-def parse_http_data(data):
+def parse_dns_question(data: bytes) -> tuple[str, int, int, bytes]:
+    """
+    TODO
+    """
+    q_name, data = parse_dns_name(data)
+    q_type, q_class = struct.unpack('! H H', data[:4])
+    return q_name, q_type, q_class, data[4:]
+
+def parse_dns_answer(data: bytes) -> tuple[int, bytes, dict[str, Union[str, int]]]:
+    """
+    TODO
+    """
+    a_name, data = parse_dns_name(data)
+    a_type, a_class, a_ttl, a_rdlength = struct.unpack('! H H I H', data[:10])
+    a_rdata, data = data[10:10 + a_rdlength], data[10 + a_rdlength:]
+    if get_dns_type(a_type) == "CNAME":
+        a_rdata = parse_dns_name(a_rdata)[0]
+    return a_type, data, {'Name': a_name, 
+                          'Type': a_type, 
+                          'Class': a_class, 
+                          'TTL': a_ttl, 
+                          'RD Length': a_rdlength, 
+                          'RD Data': a_rdata}
+
+def parse_http_data(data: bytes) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """
     TODO
     """
@@ -240,8 +233,6 @@ def parse_http_data(data):
     
     if not decoded_data or decoded_data.isspace():
         return http_method, http_url, status_code
-
-    # print(decoded_data)
 
     lines = decoded_data.split('\r\n')
     if lines:
@@ -271,13 +262,11 @@ def parse_http_data(data):
                 recent_domain = host_match.group(1).strip()
                 http_url = recent_domain
 
-    # print(f"Method: {http_method}, URL: {http_url}, Status: {status_code}")
     return http_method, http_url, status_code
 
-# TODO: add precise function signature.
-def filter_non_hex(string):
+def filter_non_hex(s: str) -> str:
     """
     TODO
     """
     # May not work properly if "\"" or "x" aren't used to designate a byte ...
-    return ''.join(c for c in string if c in '0123456789abcdexfABCDEF\\\'')
+    return ''.join(c for c in s if c in '0123456789abcdexfABCDEF\\\'')
