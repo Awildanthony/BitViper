@@ -6,6 +6,7 @@ import tkinter as tk
 import traceback
 import threading
 import socket
+import queue
 import time
 import os
 
@@ -18,15 +19,22 @@ UPDATES_PER_SECOND = 10
 
 class PacketSniffer(threading.Thread):
     """
-    A class that extends threading.Thread to sniff packets 
-    from a network interface.
+    A class that extends `threading.Thread` to sniff packets from 
+    a network interface.
+
+    Attributes: `queue`, `lock`, `running`, `hex_data`, `file_name`, 
+                `sesh_num`, `packet_num`.
+    
+    Methods: `fetch_sesh_num`, `run`, `stop`.
     """
 
     sesh_lock = threading.Lock()
     first_launch = True
     session_number = 1
 
-    def __init__(self: 'PacketSniffer', packet_queue, thread_lock):
+    def __init__(self: 'PacketSniffer', 
+                 packet_queue: queue.Queue, 
+                 thread_lock: threading.Lock):
         super().__init__()
         self.queue = packet_queue
         self.lock = thread_lock
@@ -198,14 +206,25 @@ class PacketSniffer(threading.Thread):
 
 class SnifferGUI:
     """
-    TODO
+    A class representing the graphical user interface (GUI) for the packet sniffer.
+
+    Attributes: `root`, `queue`, `lock`, `sniffer`, `sorting_column`,
+                `sorting_order`, `capture_running`.
+
+    Methods: `setup_ui`, `start_sniffer`, `stop_sniffer`, `clear_table`,
+             `on_closing`, `save_packets`, `load_packets`, `update_gui`,
+             `show_context_menu`, `show_raw_data`, `update_format`,
+             `sort_treeview`, `apply_search`.
     """
-    def __init__(self: 'SnifferGUI', root_window, packet_queue, thread_lock):
+    def __init__(self: 'SnifferGUI', 
+                 root_window: tk.Tk, 
+                 packet_queue: queue.Queue, 
+                 thread_lock: threading.Lock):
         self.root = root_window
         self.queue = packet_queue
         self.lock = thread_lock
         self.sniffer = None
-        self.sorting_column = None
+        self.sorting_column = None  # Most recent column sorted.
         self.sorting_order = True   # Ascending by default.
         self.capture_running = False
         self.setup_ui()
@@ -215,7 +234,7 @@ class SnifferGUI:
 
     def setup_ui(self: 'SnifferGUI') -> None:
         """
-        TODO
+        Set up the GUI elements to their base states.
         """
         # Set launch header and window dimensions.
         self.root.title('SocketSloth')
@@ -267,9 +286,9 @@ class SnifferGUI:
         search_button.pack(side=tk.LEFT)
 
         # Set header titles.
-        self.tree = ttk.Treeview(self.root, columns=('Sesh', 'No.', 'Time', 'Source', 
-                                                     'Destination', 'Protocol', 
-                                                     'Length', 'Data'), 
+        self.tree = ttk.Treeview(self.root, columns=('Sesh', 'No.', 'Time', 
+                                                     'Source', 'Destination', 
+                                                     'Protocol', 'Length', 'Data'), 
                                             show='headings')
         self.tree.heading('Sesh', text="Sesh")
         self.tree.heading('No.', text="No.")
@@ -314,7 +333,7 @@ class SnifferGUI:
 
     def start_sniffer(self: 'SnifferGUI') -> None:
         """
-        TODO
+        API to `run()` a PacketSniffer instance.
         """
         if not self.sniffer or not self.sniffer.running:
             # If an instance of `PacketSniffer` DNE, create one.
@@ -336,7 +355,7 @@ class SnifferGUI:
 
     def stop_sniffer(self: 'SnifferGUI') -> None:
         """
-        TODO
+        API to `stop()` the current PacketSniffer instance.
         """
         self.sniffer.stop()
         # vvv Creates a new instance upon the next start.
@@ -355,15 +374,9 @@ class SnifferGUI:
 
     def clear_table(self: 'SnifferGUI') -> None:
         """
-        TODO
+        Clear the table of captured packets in the GUI.
+        Note this does not remove them from `self.file_name`.
         """
-        if self.sniffer:
-            self.sniffer.stop()
-            # vvv Creates a new instance upon the next start.
-            self.sniffer = None
-            self.start_button.config(state=tk.NORMAL)
-            self.stop_button.config(state=tk.DISABLED)
-            self.capture_running = False
         for i in self.tree.get_children():
             self.tree.delete(i)
         self.clear_button.config(state=tk.DISABLED)
@@ -386,12 +399,11 @@ class SnifferGUI:
 
     def save_packets(self: 'SnifferGUI') -> None:
         """
-        TODO: fix this it's completely broken!
+        TODO: fix this. It's completely broken!
 
-        Prompts user to name a `.pcap` outfile, to which any
-        packets in `self.tree` will be saved.
-        Should only be possible if sniffer is stopped and
-        there are packets in the table.
+        Prompts user to name a `.pcap` outfile, to which any packets
+        in `self.tree` will be saved. Should only be possible if 
+        sniffer is stopped and there are packets in the table.
         """
         try:
             # Ask the user for the .pcap outfile's name and path.
@@ -413,7 +425,12 @@ class SnifferGUI:
 
     def load_packets(self: 'SnifferGUI') -> None:
         """
-        TODO
+        TODO: fix this. It's not universally-compatible yet.
+
+        Prompts user to load a `.pcap` infile, which will display its
+        packets in the table. Any .pcap files previously generated by
+        SocketSloth will include a session number, packet number, and
+        time, while others (e.g., from Wireshark) will not.
         """
         try:
             # Ask the user for a .pcap infile to load.
@@ -468,8 +485,7 @@ class SnifferGUI:
                                 try:
                                     non_http_data = (f'{src_port} → '
                                                      f'{dst_port} [???] Seq={seq} '
-                                                     f'Ack={ack} {data}'
-                                                    ).encode('utf-8').decode('utf-8')
+                                                     f'Ack={ack} {data}')
                                 except UnicodeDecodeError as error:
                                     non_http_data = "Decoding error:\n{}".format(error)
                                 data = non_http_data
@@ -555,7 +571,8 @@ class SnifferGUI:
 
     def update_gui(self: 'SnifferGUI') -> None:
         """
-        TODO
+        Update the GUI to reflect changes in the packet queue.
+        Happens every `UPDATES_PER_SECOND` times per second.
         """
         if self.sniffer:
             while not self.queue.empty():
@@ -589,7 +606,9 @@ class SnifferGUI:
 
     def show_raw_data(self: 'SnifferGUI') -> None:
         """
-        TODO
+        Offers the user a selection menu to further examine a
+        packet by right-clicking it. Currently supports only
+        examining the payload in either raw hex or ASCII format.
         """
         selected_item = self.tree.selection()
         if selected_item:
@@ -629,7 +648,7 @@ class SnifferGUI:
                       format_type: str, 
                       text_widget: tk.Text) -> None:
         """
-        TODO
+        Update the display format of the payload data (e.g., hex -> ASCII).
         """
         if format_type == 'ASCII':
             # Get the raw hex data string from the text widget.
@@ -644,7 +663,10 @@ class SnifferGUI:
                     return
 
             # Decode the raw hex data to ASCII.
-            ascii_data = ''.join(chr(byte) if 32 <= byte < 127 else '.' for byte in hex_data)
+            ascii_data = ''.join(
+                chr(byte) if 32 <= byte < 127 else '.'
+                for byte in hex_data
+            )
 
             # Update the text widget with the ASCII data.
             text_widget.config(state=tk.NORMAL)
@@ -655,13 +677,15 @@ class SnifferGUI:
             # Display the raw hex data.
             text_widget.config(state=tk.NORMAL)
             text_widget.delete(1.0, tk.END)
-            text_widget.insert(tk.END, 
-                               ' '.join(f'{byte:02X}' for byte in self.sniffer.hex_data))
+            text_widget.insert(
+                tk.END, 
+                ' '.join(f'{byte:02X}' for byte in self.sniffer.hex_data))
             text_widget.config(state=tk.DISABLED)
 
     def sort_treeview(self: 'SnifferGUI', col: str) -> None:
         """
-        TODO
+        Sort the data table in the GUI based on the selected column.
+        Toggles between ASC (default) and DESC alphanumerical order.
         """
         # Check if we're sorting the same column.
         if self.sorting_column == col:
@@ -671,7 +695,12 @@ class SnifferGUI:
             # Set default sorting order to ascending for a new column.
             self.sorting_order = True
 
-        items = [(float(self.tree.set(k, col)) if col in ['Time', 'No.', 'Length'] else self.tree.set(k, col), k) for k in self.tree.get_children('')]
+        # Create a list of tuples with the sort value and item's ID.
+        items = [(float(self.tree.set(k, col)) 
+                  if col in ['Time', 'No.', 'Length']
+                  else self.tree.set(k, col),
+                  k)
+                for k in self.tree.get_children('')]
         items.sort(reverse=self.sorting_order)
 
         # Rearrange items in sorted positions.
@@ -683,7 +712,7 @@ class SnifferGUI:
     
     def apply_search(self: 'SnifferGUI') -> None:
         """
-        TODO
+        Apply a search query to highlight packets in the data table.
         """
         # Convert the query to lowercase for case-insensitive search.
         query = self.search_entry.get().lower()
@@ -697,7 +726,7 @@ class SnifferGUI:
         # Clear current selection and select the matching items.
         self.tree.selection_remove(self.tree.selection())
         self.tree.selection_add(*matching_items)
-        self.tree.see(matching_items[0] if matching_items else "")  # Jump to first one
+        self.tree.see(matching_items[0] if matching_items else "")  # Jump to first
 
 
 def main():
