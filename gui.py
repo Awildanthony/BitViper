@@ -22,9 +22,9 @@ class PacketSniffer(threading.Thread):
     A class that extends `threading.Thread` to sniff packets from 
     a network interface.
 
-    Attributes: `queue`, `lock`, `running`, `hex_data`, `file_name`, 
+    Attributes: `queue`, `lock`, `running`, `outfile`, 
                 `sesh_num`, `packet_num`.
-    
+
     Methods: `fetch_sesh_num`, `run`, `stop`.
     """
 
@@ -39,8 +39,7 @@ class PacketSniffer(threading.Thread):
         self.queue = packet_queue
         self.lock = thread_lock
         self.running = False
-        self.hex_data = None
-        self.file_name = "captured_packets.pcap"
+        self.outfile = "captured_packets.pcap"
         self.sesh_num = self.fetch_sesh_num()
         self.packet_num = 0
 
@@ -78,122 +77,54 @@ class PacketSniffer(threading.Thread):
         while self.running:
             try:
                 # Read raw data of IP packet from socket, up to max size.
-                raw_data, addr = connection.recvfrom(MAX_PACKET_SIZE)
-                # addr = (NI name, ether proto #, pkt type, hatype, src MAC addr)
+                net_frame, addr = connection.recvfrom(MAX_PACKET_SIZE)
+                # addr = (NI name, eth_proto #, pkt type, hatype, src MAC addr)
             except socket.timeout:
                 continue
 
             packet_data = (0, 0, '0.000000', 'N/A', 'N/A', 'N/A', 0, 'N/A')
             try:
                 # Parse raw data from the network frame into an ethernet frame.
-                dest_mac, src_mac, eth_proto, raw_data = ethernet_frame(raw_data)
-                # Set defaults.
-                eth_protocol = eth_proto
-                self.hex_data = raw_data
+                dst_mac, src_mac, proto, eth_frame = parse_net_frame(net_frame)
 
-                # Check the Ethernet protocol and unpack accordingly.
-                if eth_proto == 'IPv4':
-                    ip_ver, hdr_len, ttl, proto, \
-                        src_ip, dst_ip, ipv4_data = unpack_ipv4(raw_data)
-                    proto = get_proto_name(proto)
+                # Get the protocol to display and the payload as bytes.
+                proto, display_data, pl = parse_eth_frame(proto, eth_frame)
+                # TODO: fix bug where DNS packet has pl as display data. How?
 
-                    # Check the IPv4 protocol and unpack accordingly.
-                    if proto == 'ICMP':
-                        icmp_type, code, checksum, data = unpack_icmp(ipv4_data)
-                        eth_protocol = "ICMP"
-                        self.hex_data = data
-
-                    elif proto == 'TCP':
-                        src_port, dst_port, seq, ack, \
-                            f_urg, f_ack, f_psh, f_rst, f_syn, f_fin, \
-                            http_method, http_url, status, data = unpack_tcp(ipv4_data)
-                        tcp_flags = set_tcp_flags(f_urg, f_ack, f_psh, f_rst, f_syn, f_fin)
-                        eth_protocol = "TCP"
-                        self.hex_data = data
-
-                        # Call to `unpack_tcp()` found HTTP(S) data.
-                        if http_method and http_url:
-                            dst_port = get_proto_name(dst_port) 
-                            # Check if from a non-conventional port for HTTP(S).
-                            eth_protocol = "HTTP(S)" if digits_in(dst_port) else dst_port
-                        else:
-                            try:
-                                data = f"{src_port} → {dst_port} {tcp_flags} Seq={seq} Ack={ack} {data}"
-                            except UnicodeDecodeError as error:
-                                data = "Decoding error:\n{}".format(error)
-
-                    elif proto == 'UDP':
-                        src_port, dst_port, size, data = unpack_udp(ipv4_data)
-                        eth_protocol = "UDP"
-                        self.hex_data = data
-
-                        # DNS.
-                        if src_port in [53, 56710] or dst_port in [53, 56710]:
-                            eth_protocol = "DNS"
-                            data = format_dns_data(data)
-
-                        # UDP (other).
-                        else:
-                            try:
-                                data = f'{src_port} → {dst_port} Len={size}'
-                            except UnicodeDecodeError as error:
-                                data = "Decoding error:\n{}".format(error)
-
-                    # IPv4 (other).
-                    else:
-                        eth_protocol = "IPv4"
-                        self.hex_data = ipv4_data
-
-                # DNS (non-IPv4).
-                elif eth_proto == '56710':
-                    try:
-                        src_port, dst_port, size, data = unpack_udp(raw_data)
-                        self.hex_data = data
-                        data = format_dns_data(data)
-                    # TODO: fix this!
-                    except Exception as buffer_error:
-                        eth_protocol = "DNS"
-                
-                # ARP.
-                # TODO: implement this!
-                elif eth_proto == '1544':
-                    eth_protocol = "ARP"
-
-                # Increment packet number and get current time.
+                # Increment packet number; get and format current time.
                 self.pkt_num += 1
-                current_time = '{:.6f}'.format(time.time() - start_time)
-                current_time = current_time.ljust(8, '0')
+                curr_t = "{:.6f}".format(time.time()-start_time).ljust(8, '0')
 
                 # Grab lock to package and write/display packet information.
                 with self.lock:
                     if not self.queue.full():
-                        packet_data = (self.sesh_num, 
-                                       self.pkt_num, 
-                                       current_time,
-                                       src_mac,
-                                       dest_mac,
-                                       eth_protocol,
-                                       len(raw_data), 
-                                       data)
+                        packet_data = (self.sesh_num,  # Session Number
+                                       self.pkt_num,   # Packet Number
+                                       curr_t,         # Time
+                                       src_mac,        # Source MAC
+                                       dst_mac,        # Destination MAC
+                                       proto,          # Network Protocol
+                                       len(pl),        # Length
+                                       display_data,   # Display Data
+                                       pl)             # Payload
                         try:
                             # Add the packet to the display queue.
                             self.queue.put(packet_data)
                             # Write the packet to the pcap file.
-                            wrpcap(self.file_name, Ether(raw_data), append=True)
+                            wrpcap(self.outfile, Ether(eth_frame), append=True)
 
-                        except Exception as queue_error:
-                            print(f"Error adding packet to queue: {queue_error}")
+                        except Exception as queue_err:
+                            print(f"Error adding packet to queue: {queue_err}")
 
             except Exception as e:
-                # A lot of things can go wrong above; traceback is helpful.
                 traceback.print_exc()
                 print(f"Error processing packet: {e}")
                 print(f"Packet data: {packet_data}\n")
 
     def stop(self: 'PacketSniffer') -> None:
         """
-        Stops the live packet capture session. Waits until the
-        current thread finishes processing them to avoid loss.
+        Stops the live packet capture session. To avoid losing data, 
+        waits until the current thread finishes processing first.
         """
         self.running = False
         # Block the calling thread until the current thread exits.
@@ -206,7 +137,7 @@ class PacketSniffer(threading.Thread):
 
 class SnifferGUI:
     """
-    A class representing the graphical user interface (GUI) for the packet sniffer.
+    A class representing the graphical user interface for the packet sniffer.
 
     Attributes: `root`, `queue`, `lock`, `sniffer`, `sorting_column`,
                 `sorting_order`, `capture_running`.
@@ -217,10 +148,10 @@ class SnifferGUI:
              `sort_treeview`, `apply_search`.
     """
     def __init__(self: 'SnifferGUI', 
-                 root_window: tk.Tk, 
+                 window_root: tk.Tk, 
                  packet_queue: queue.Queue, 
                  thread_lock: threading.Lock):
-        self.root = root_window
+        self.root = window_root
         self.queue = packet_queue
         self.lock = thread_lock
         self.sniffer = None
@@ -288,7 +219,8 @@ class SnifferGUI:
         # Set header titles.
         self.tree = ttk.Treeview(self.root, columns=('Sesh', 'No.', 'Time', 
                                                      'Source', 'Destination', 
-                                                     'Protocol', 'Length', 'Data'), 
+                                                     'Protocol', 'Length', 
+                                                     'Data'), 
                                             show='headings')
         self.tree.heading('Sesh', text="Sesh")
         self.tree.heading('No.', text="No.")
@@ -305,16 +237,16 @@ class SnifferGUI:
 
         # Set header titles with binding to enable sorting.
         # Width ratios should add up to 0.9 != 1.0, for some reason?
-        for col, ratio in [('Sesh', 0.03),
-                           ('No.', 0.05), 
-                           ('Time', 0.08), 
-                           ('Source', 0.12), 
-                           ('Destination', 0.12), 
-                           ('Protocol', 0.08), 
-                           ('Length', 0.08), 
-                           ('Data', 0.34)]:
-            self.tree.column(col, anchor='center', width=int(screen_width * ratio))
-            self.tree.heading(col, text=col, anchor='center', 
+        for col, ratio in [('Sesh',         0.03),
+                           ('No.',          0.05), 
+                           ('Time',         0.08), 
+                           ('Source',       0.12), 
+                           ('Destination',  0.12), 
+                           ('Protocol',     0.08), 
+                           ('Length',       0.08), 
+                           ('Data',         0.34)]:
+            self.tree.column(col, anchor='c', width=int(screen_width * ratio))
+            self.tree.heading(col, text=col, anchor='c', 
                               command=lambda c=col: self.sort_treeview(c))
         # Data column looks better left-aligned than centered.
         self.tree.column('Data', anchor='w')
@@ -375,7 +307,7 @@ class SnifferGUI:
     def clear_table(self: 'SnifferGUI') -> None:
         """
         Clear the table of captured packets in the GUI.
-        Note this does not remove them from `self.file_name`.
+        Note this does not remove them from `self.outfile`.
         """
         for i in self.tree.get_children():
             self.tree.delete(i)
@@ -425,7 +357,7 @@ class SnifferGUI:
 
     def load_packets(self: 'SnifferGUI') -> None:
         """
-        TODO: fix this. It's not universally-compatible yet.
+        TODO: fix this, IT'S COMPLETELY BROKEN!
 
         Prompts user to load a `.pcap` infile, which will display its
         packets in the table. Any .pcap files previously generated by
@@ -449,28 +381,28 @@ class SnifferGUI:
             captured_packets = []
             for idx, packet in enumerate(packets, start=1):
                 try:
-                    dest_mac, src_mac, eth_proto, data = ethernet_frame(bytes(packet))
+                    dest_mac, src_mac, \
+                        eth_proto, eth_data = parse_net_frame(bytes(packet))
                     # Set defaults.
                     eth_protocol = eth_proto
-                    self.hex_data = data
+                    self.display_data = eth_data
 
                     # Check the Ethernet protocol and unpack accordingly.
                     if eth_proto == 'IPv4':
-                        version, header_length, ttl, \
-                            proto, src, target, data = unpack_ipv4(data)
+                        version, header_length, ttl, proto, \
+                            src_ip, dst_ip, ipv4_data = unpack_ipv4(eth_data)
 
                         # Check the IPv4 protocol and unpack accordingly.
                         if proto == 1:
-                            icmp_type, code, checksum, data = unpack_icmp(data)
+                            icmp_type, code, csum, data = unpack_icmp(ipv4_data)
                             eth_protocol = 'ICMP'
-                            self.hex_data = data
+                            self.display_data = data
 
                         elif proto == 6:
-                            src_port, dst_port, seq, ack, \
-                                f_urg, f_ack, f_psh, f_rst, f_syn, f_fin, \
+                            src_port, dst_port, seq, ack, tcp_flags, \
                                 http_method, http_url, status, data = unpack_tcp(data)
                             eth_protocol = 'TCP'
-                            self.hex_data = data
+                            self.display_data = data
 
                             # Call to unpack_tcp() found HTTP(S) data.
                             if http_method and http_url:    
@@ -493,7 +425,7 @@ class SnifferGUI:
                         elif proto == 17:
                             src_port, dst_port, size, data = unpack_udp(data)
                             eth_protocol = 'UDP'
-                            self.hex_data = data
+                            self.display_data = data
 
                             # DNS.
                             if src_port in [53, 56710] or dst_port in [53, 56710]:
@@ -510,14 +442,14 @@ class SnifferGUI:
                         # IPv4 (other).
                         else:
                             eth_protocol = 'IPv4'
-                            self.hex_data = data
+                            self.display_data = data
 
                     # DNS (non-IPv4).
                     elif eth_proto == '56710':
                         try:
                             src_port, dst_port, size, data = unpack_udp(data)
                             eth_protocol = 'DNS'
-                            self.hex_data = data
+                            self.display_data = data
                             data = format_dns_data(data)
                         # TODO: fix this!
                         except Exception as buffer_error: 
@@ -612,7 +544,7 @@ class SnifferGUI:
         """
         selected_item = self.tree.selection()
         if selected_item:
-            # values = (sesh #, pkt #, time, src MAC, dst MAC, proto, len, data)
+            # values = (sesh, pkt #, time, src MAC, dst MAC, proto, len, data)
             values = self.tree.item(selected_item, 'values')
             if values:
                 payload = values[-1]
@@ -636,12 +568,12 @@ class SnifferGUI:
                 text_widget.config(state=tk.DISABLED)
 
                 # Create a dropdown list for different viewing formats.
-                format_menu = tk.OptionMenu(raw_data_window, 
-                                            format_var, 
-                                            "Raw Hex Data", 
-                                            "ASCII", 
-                                            command=lambda x: 
-                                                self.update_format(x, text_widget))
+                format_menu = tk.OptionMenu(
+                    raw_data_window, 
+                    format_var, 
+                    "Raw Hex Data", 
+                    "ASCII", 
+                    command=lambda x: self.update_format(x, text_widget))
                 format_menu.pack()
 
     def update_format(self: 'SnifferGUI', 
@@ -726,19 +658,19 @@ class SnifferGUI:
         # Clear current selection and select the matching items.
         self.tree.selection_remove(self.tree.selection())
         self.tree.selection_add(*matching_items)
-        self.tree.see(matching_items[0] if matching_items else "")  # Jump to first
+        self.tree.see(matching_items[0] if matching_items else "")  # Go to 1st
 
 
 def main():
-    root_window = tk.Tk()
+    window_root = tk.Tk()
     packet_queue = Queue(maxsize=MAX_PACKET_QUEUE_SIZE)
     thread_lock = threading.Lock()
-    gui = SnifferGUI(root_window, packet_queue, thread_lock)
+    gui = SnifferGUI(window_root, packet_queue, thread_lock)
 
     # Bind the on_closing method to the closing event.
-    root_window.protocol('WM_DELETE_WINDOW', gui.on_closing)
+    window_root.protocol('WM_DELETE_WINDOW', gui.on_closing)
 
-    root_window.mainloop()
+    window_root.mainloop()
 
 
 if __name__ == '__main__':
