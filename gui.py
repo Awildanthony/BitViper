@@ -1,14 +1,14 @@
-from sniffer import *
-from scapy.all import Ether, rdpcap, wrpcap
-from queue import Queue
-from tkinter import ttk, messagebox, filedialog
-import tkinter as tk
-import traceback
-import threading
-import socket
-import queue
-import time
 import os
+import queue
+import socket
+import threading
+import time
+import traceback
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+from queue import Queue
+from scapy.all import Ether, rdpcap, wrpcap
+from sniffer import *
 
 
 MAX_PACKET_SIZE = 65535

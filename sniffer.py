@@ -1,40 +1,9 @@
 import re
 import socket
 import struct
-from urllib.parse import urlparse
+from meta import *
 from typing import Optional, Union
-
-
-# Most recent HTTP(S) domain name.
-recent_domain = None
-
-# Dictionary for protocol names.
-PORT_TO_PROTOCOL = {
-    1:      "ICMP",
-    6:      "TCP",
-    8:      "IPv4",
-    17:     "UDP",
-    53:     "DNS",
-    80:     "HTTP",
-    443:    "HTTPS",
-    1544:   "ARP",
-    56710:  "DNS"
-}
-
-# Dictionary for DNS record types.
-DNS_TYPES = {
-    1:   "A",     # ipv4
-    2:   "NS",
-    5:   "CNAME",
-    15:  "MX",
-    28:  "AAAA",  # ipv6
-    33:  "SRV",
-    65:  "HTTPS"
-}
-
-DNS_PORTS = [53, 56710]
-
-ARP_PORTS = [1544]
+from urllib.parse import urlparse
 
 
 def get_proto_name(port: int) -> str:
@@ -96,16 +65,23 @@ def unpack_ipv4(data: bytes) -> tuple[int, int, int, int, str, str, bytes]:
     return ver, hdr_len, ttl, proto, src_ip, dst_ip, payload
 
 
-def unpack_icmp(data: bytes) -> tuple[int, int, int, str, bytes]:
+def unpack_icmp(data: bytes) -> tuple[str, bytes]:
     """
     Unpacks an identified ICMP packet by extracting its `icmp_type`,
     `code`, `checksum`, `display_data`, and `payload` data.
     """
     header_info = data[:4]
     payload = data[4:]
-    icmp_type, code, checksum = struct.unpack("! B B H", header_info)
-    display_data = f"type={icmp_type} code={code} checksum={checksum}"
-    return icmp_type, code, checksum, display_data, payload
+    type, code, checksum = struct.unpack("! B B H", header_info)
+    
+    # Get the description for icmp_type.
+    icmp_type_desc = ICMP_TYPES.get(type, "Unknown type.")
+    
+    # Get the description for the icmp_code based on icmp_type.
+    icmp_code_desc = ICMP_CODE_DICT.get(type, {}).get(code, "Unknown code.")
+    
+    display_data = f'type={type} code={code} "{icmp_type_desc} {icmp_code_desc}"'
+    return display_data, payload
 
 
 def unpack_tcp(data: bytes) -> tuple[int, int, int, int, list[int], 
@@ -321,7 +297,7 @@ def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
 
         # Check the IPv4 protocol and unpack accordingly.
         if proto_name == 'ICMP':
-            icmp_type, code, checksum, display, pl = unpack_icmp(ipv4_pl)
+            display, pl = unpack_icmp(ipv4_pl)
             soln.update({'proto': "ICMP", 'display': display, 'pl': pl})
 
         elif proto_name == 'TCP':
