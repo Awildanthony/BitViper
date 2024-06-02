@@ -6,7 +6,7 @@ from typing import Optional, Union
 from urllib.parse import urlparse
 
 
-def get_proto_name(port: int) -> str:
+def port_to_proto(port: int) -> str:
     """
     Match `port` number to protocol.
     If none, return `port` as a string.
@@ -14,7 +14,7 @@ def get_proto_name(port: int) -> str:
     return PORT_TO_PROTOCOL.get(port, str(port))
 
 
-def get_dns_type(record: int) -> str:
+def record_to_dns(record: int) -> str:
     """
     Match `record` number to DNS type.
     If none, return `record` as a string.
@@ -29,7 +29,7 @@ def digits_in(s: str) -> bool:
     return any(character.isdigit() for character in s)
 
 
-def str_mac(mac_addr: bytes) -> str:
+def mac_str(mac_addr: bytes) -> str:
     """
     Converts `mac_addr` from bytes to a string.
     """
@@ -46,8 +46,8 @@ def parse_net_frame(packet_header: bytes) -> tuple[str, str, str, bytes]:
     header_info = packet_header[:14]
     payload = packet_header[14:]
     dst_mac, src_mac, proto = struct.unpack("! 6s 6s H", header_info)
-    proto_name = get_proto_name(socket.htons(proto))
-    return str_mac(dst_mac), str_mac(src_mac), proto_name, payload
+    proto_name = port_to_proto(socket.htons(proto))
+    return mac_str(dst_mac), mac_str(src_mac), proto_name, payload
 
 
 def unpack_ipv4(data: bytes) -> tuple[int, int, int, int, str, str, bytes]:
@@ -150,13 +150,13 @@ def format_dns_data(dns_data: bytes) -> str:
         additional_rrs = struct.unpack('! H H H H H H', dns_data[:12])
     data = dns_data[12:]
     q_name, q_type, q_class, data = parse_dns_question(data)
-    q_type = get_dns_type(q_type)
+    q_type = record_to_dns(q_type)
     answers = []
     cnames = ''
     for _ in range(answer_rrs):
         a_type, data, answer = parse_dns_answer(data)
         answers.append(answer)
-        if get_dns_type(answer['Type']) == 'CNAME':
+        if record_to_dns(answer['Type']) == 'CNAME':
             cnames += f" CNAME {answer['RD Data']}"
     
     # Construct return string; distinguish between DNS query and response.
@@ -212,7 +212,7 @@ def parse_dns_answer(data: bytes) -> tuple[int, bytes, dict[str, Union[str, int]
     a_name, data = parse_dns_name(data)
     a_type, a_class, a_ttl, a_rdlength = struct.unpack('! H H I H', data[:10])
     a_rdata, data = data[10:10 + a_rdlength], data[10 + a_rdlength:]
-    if get_dns_type(a_type) == "CNAME":
+    if record_to_dns(a_type) == "CNAME":
         a_rdata = parse_dns_name(a_rdata)[0]
     return a_type, data, {'Name': a_name, 
                           'Type': a_type, 
@@ -291,8 +291,8 @@ def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
 
     # Check the Ethernet protocol and unpack accordingly.
     if eth_proto == 'IPv4':
-        ver, h_len, ttl, proto, src_ip, dst_ip, ipv4_pl = unpack_ipv4(frame)
-        proto_name = get_proto_name(proto)
+        ver, hdr_len, ttl, proto, src_ip, dst_ip, ipv4_pl = unpack_ipv4(frame)
+        proto_name = port_to_proto(proto)
         soln.update({'proto': "IPv4", 'display': "ipv4?", 'pl': ipv4_pl})
 
         # Check the IPv4 protocol and unpack accordingly.
@@ -309,7 +309,7 @@ def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
 
             # Call to `unpack_tcp()` found HTTP(S) data.
             if http_method and http_url:
-                dst_port = get_proto_name(dst_port) 
+                dst_port = port_to_proto(dst_port) 
                 # Check if from a non-conventional port for HTTP(S).
                 soln['proto'] = "HTTP(S)" if digits_in(dst_port) else dst_port
             else:
@@ -332,14 +332,24 @@ def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
                 except UnicodeDecodeError as error:
                     soln['display'] = f"Decoding error:\n{error}"
 
-    # DNS (non-IPv4).
-    elif eth_proto in map(str, DNS_PORTS):
-        src_port, dst_port, size, pl = unpack_udp(frame)
-        soln.update({'proto': "DNS", 'display': format_dns_data(pl), 'pl': pl})
+    # TODO: everything below this is a result of poor input specs/formatting!!!
 
-    # ARP.
-    elif eth_proto in map(str, ARP_PORTS):
-        soln['proto'] = "ARP"
-        # TODO: implement the rest.
+    # We have a port number.
+    elif digits_in(eth_proto):
+        # DNS (non-IPv4).
+        if eth_proto in map(str, DNS_PORTS):
+            src_port, dst_port, len, pl = unpack_udp(frame)
+            soln.update({'proto': "DNS", 'display': format_dns_data(pl), 'pl': pl})
+
+        # ARP.
+        elif eth_proto in map(str, ARP_PORTS):
+            soln['proto'] = "ARP"
+            # TODO: implement the rest.
+    
+    # We have a specific IPV4 network protocol's name.
+    elif eth_proto in IPV4_PROTOS:
+        if eth_proto == 'DNS':
+            src_port, dst_port, len, pl = unpack_udp(frame)
+            soln.update({'proto': "DNS", 'display': format_dns_data(pl), 'pl': pl})
     
     return soln['proto'], soln['display'], soln['pl']

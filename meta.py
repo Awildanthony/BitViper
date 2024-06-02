@@ -1,6 +1,6 @@
 
 # Dictionary for protocol names.
-PORT_TO_PROTOCOL = {
+PORT_TO_PROTOCOL: dict[int, str] = {
     1:      "ICMP",
     6:      "TCP",
     8:      "IPv4",
@@ -13,12 +13,24 @@ PORT_TO_PROTOCOL = {
 }
 
 
+# All currently supported IPv4 network protocols.
+IPV4_PROTOS = [
+    "ICMP", 
+    "TCP",
+        "HTTP", 
+        "HTTPS", 
+        "HTTP(S)", 
+    "UDP", 
+    "DNS"
+]
+
+
 # Most recent HTTP(S) domain name.
 recent_domain = None
 
 
 # Dictionary for DNS record types.
-DNS_TYPES = {
+DNS_TYPES: dict[int, str] = {
     1:   "A",     # ipv4
     2:   "NS",
     5:   "CNAME",
@@ -32,7 +44,7 @@ DNS_PORTS = [53, 56710]
 
 # Dictionary for ICMP types; dictionary for ICMP codes.
 # https://www.ibm.com/docs/en/qsip/7.5?topic=applications-icmp-type-code-ids
-ICMP_TYPES = {
+ICMP_TYPES: dict[int, str] = {
     0:   "Echo reply.",
     3:   "Destination unreachable.",
     4:   "Source quench.",
@@ -51,7 +63,7 @@ ICMP_TYPES = {
     30:  "Traceroute."
 }
 # ... ICMP Destination Unreachable Codes:
-ICMP_TYPE3_CODES = {
+ICMP_TYPE3_CODES: dict[int, str] = {
     0:   "Net is unreachable.",
     1:   "Host is unreachable.",
     2:   "Protocol is unreachable.",
@@ -70,14 +82,14 @@ ICMP_TYPE3_CODES = {
     15:  "Precedence cutoff is in effect."
 }
 # ... ICMP Redirect Codes:
-ICMP_TYPE5_CODES = {
+ICMP_TYPE5_CODES: dict[int, str] = {
     0:  "Redirect datagram for the network (or subnet).",
     1:  "Redirect datagram for the host.",
     2:  "Redirect datagram for the type of service and network.",
     3:  "Redirect datagram for the type of service and host."
 }
 # ... ICMP Time Exceeded Codes:
-ICMP_TYPE11_CODES = {
+ICMP_TYPE11_CODES: dict[int, str] = {
     0:  "`Time to Live` exceeded in transit.",
     1:  "Fragment reassembly time exceeded."
 }

@@ -167,9 +167,13 @@ class SnifferGUI:
         """
         Set up the GUI elements to their base states.
         """
+        # Fetch screen dimensions.
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
         # Set launch header and window dimensions.
         self.root.title('SocketSloth')
-        self.root.geometry('2650x1000')
+        self.root.geometry(f'{screen_width}x{screen_height}')
 
         # Set data font style and row height.
         style = ttk.Style()
@@ -230,10 +234,6 @@ class SnifferGUI:
         self.tree.heading('Protocol', text="Protocol")
         self.tree.heading('Length', text="Length")
         self.tree.heading('Data', text="Data")
-
-        # Fetch screen dimensions.
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
 
         # Set header titles with binding to enable sorting.
         # Width ratios should add up to 0.9 != 1.0, for some reason?
@@ -378,123 +378,52 @@ class SnifferGUI:
             packets = rdpcap(file_path)
 
             # Extract relevant information from the loaded packets.
-            captured_packets = []
+            loaded_packets = []
             for idx, packet in enumerate(packets, start=1):
                 try:
-                    dest_mac, src_mac, \
-                        eth_proto, eth_data = parse_net_frame(bytes(packet))
-                    # Set defaults.
-                    eth_protocol = eth_proto
-                    self.display_data = eth_data
-
-                    # Check the Ethernet protocol and unpack accordingly.
-                    if eth_proto == 'IPv4':
-                        version, header_length, ttl, proto, \
-                            src_ip, dst_ip, ipv4_data = unpack_ipv4(eth_data)
-
-                        # Check the IPv4 protocol and unpack accordingly.
-                        if proto == 1:
-                            icmp_type, code, csum, data = unpack_icmp(ipv4_data)
-                            eth_protocol = 'ICMP'
-                            self.display_data = data
-
-                        elif proto == 6:
-                            src_port, dst_port, seq, ack, tcp_flags, \
-                                http_method, http_url, status, data = unpack_tcp(data)
-                            eth_protocol = 'TCP'
-                            self.display_data = data
-
-                            # Call to unpack_tcp() found HTTP(S) data.
-                            if http_method and http_url:    
-                                if dst_port == 80 or src_port == 80:
-                                    eth_protocol = 'HTTP'
-                                if dst_port == 443 or src_port == 443:
-                                    eth_protocol = 'HTTPS'
-                                else:
-                                    # Non-conventional port (unknown).
-                                    eth_protocol = 'HTTP(S)'
-                            else:
-                                try:
-                                    non_http_data = (f'{src_port} → '
-                                                     f'{dst_port} [???] Seq={seq} '
-                                                     f'Ack={ack} {data}')
-                                except UnicodeDecodeError as error:
-                                    non_http_data = "Decoding error:\n{}".format(error)
-                                data = non_http_data
-
-                        elif proto == 17:
-                            src_port, dst_port, size, data = unpack_udp(data)
-                            eth_protocol = 'UDP'
-                            self.display_data = data
-
-                            # DNS.
-                            if src_port in [53, 56710] or dst_port in [53, 56710]:
-                                eth_protocol = 'DNS'
-                                data = format_dns_data(data)
-
-                            # UDP (other).
-                            else:
-                                try:
-                                    data = f'{src_port} → {dst_port} Len={size}'
-                                except UnicodeDecodeError as error:
-                                    data = "Decoding error:\n{}".format(error)
-
-                        # IPv4 (other).
-                        else:
-                            eth_protocol = 'IPv4'
-                            self.display_data = data
-
-                    # DNS (non-IPv4).
-                    elif eth_proto == '56710':
-                        try:
-                            src_port, dst_port, size, data = unpack_udp(data)
-                            eth_protocol = 'DNS'
-                            self.display_data = data
-                            data = format_dns_data(data)
-                        # TODO: fix this!
-                        except Exception as buffer_error: 
-                            eth_protocol = 'DNS'
-
-                    # ARP.
-                    # TODO: implement this!
-                    elif eth_proto == '1544':
-                        eth_protocol = 'ARP'
-
-                    # .pcap files typically do not store session_number.
-                    if hasattr(self.sniffer, 'session_number'):
-                        session_number = self.sniffer.sesh_num
+                    # Extract Ethernet frame from the packet.
+                    if Ether in packet:
+                        eth_frame = bytes(packet[Ether])
                     else:
-                        session_number = "#"
+                        print(f"Could not load packet {idx}:\n{packet}\n")
+                        continue
 
-                    # .pcap files typically do not store packet_number.
-                    if hasattr(self.sniffer, 'pkt_num'):
-                        index = self.sniffer.pkt_num
-                    else:
-                        index = idx
+                    # Parse data from the network frame into an ethernet frame.
+                    dst_mac, src_mac, proto, eth_pl = parse_net_frame(eth_frame)
+                    print(idx, dst_mac, src_mac, proto)
 
-                    # .pcap files might not have a start_time attribute.
-                    start_time = getattr(self.sniffer, 'start_time', 0.0)
+                    # Extract displayable info from the ethernet frame.
+                    proto, display_data, net_pl = parse_eth_frame(proto, eth_pl)
+                    print(idx, proto, display_data)
+
+                    # Only our .pcap files store session/packet #s.
+                    sesh_num = getattr(self.sniffer, 'sesh_num', "#")
+                    pkt_num = getattr(self.sniffer, 'pkt_num', idx)
+
+                    # .pcap files might not store packets' capture time.
+                    capture_time = getattr(self.sniffer, 'cap_time', 0.0)
 
                     # (Un)package and write/display packet information.
-                    packet_info = (session_number,
-                                   index,
-                                   "{:.6f}".format(time.time() - start_time),
-                                   src_mac,
-                                   dest_mac,
-                                   eth_protocol,
-                                   len(bytes(packet)),
-                                   data)
-                    captured_packets.append(packet_info)
+                    packet_data = (sesh_num,      # Session Number
+                                   pkt_num,       # Packet Number
+                                   capture_time,  # Time
+                                   src_mac,       # Source MAC
+                                   dst_mac,       # Destination MAC
+                                   proto,         # Network Protocol
+                                   len(net_pl),   # Length
+                                   display_data,  # Display Data
+                                   net_pl)        # Payload
+                    loaded_packets.append(packet_data)
 
                 except Exception as e:
                     print(f"Error extracting packet information: {str(e)}")
 
             # Populate the data table with the extracted information.
-            for packet_info in captured_packets:
-                new_item = self.tree.insert("", 'end', values=packet_info)
+            for packet in loaded_packets:
+                new_item = self.tree.insert("", 'end', values=packet)
                 self.tree.see(new_item)
 
-            # Packets are now in the data table; enable the Save and Clear buttons.
+            # Packets now in data table; enable the Save and Clear buttons.
             self.save_button.config(state=tk.NORMAL)
             self.clear_button.config(state=tk.NORMAL)
 
