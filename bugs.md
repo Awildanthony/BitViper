@@ -1,4 +1,4 @@
-1.) Seom warnings while sniffer is running:
+1.) Some warnings while sniffer is running:
 ```
 WARNING: PcapWriter: unknown LL type for bytes. Using type 1 (Ethernet)
 WARNING: more PcapWriter: unknown LL type for bytes. Using type 1 (Ethernet)
@@ -9,7 +9,7 @@ WARNING: more PcapWriter: unknown LL type for bytes. Using type 1 (Ethernet)
 
 3.) ARP not implemented yet.
 
-4.) IP addresses display not implemented yet.
+4.) Color-coding for packets of different protocols not implemented yet.
 
 5.) Dynamic column/window contents shifting not implemented yet.
 

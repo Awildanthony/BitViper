@@ -284,16 +284,23 @@ def filter_non_hex(s: str) -> str:
 def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
     """
     Provided a packet's ethernet protocol and ethernet frame, 
-    returns its network protocol, display data, and payload data.
+    returns its source IP address, destination IP address,
+    network protocol, display data, and payload data.
     """
     # Set defaults.
-    soln = {'proto': eth_proto, 'display': str(frame), 'pl': frame}
+    soln = {
+        'src_ip': "", 
+        'dst_ip': "", 
+        'proto': eth_proto, 
+        'display': str(frame), 
+        'pl': frame
+    }
 
     # Check the Ethernet protocol and unpack accordingly.
     if eth_proto == 'IPv4':
         ver, hdr_len, ttl, proto, src_ip, dst_ip, ipv4_pl = unpack_ipv4(frame)
         proto_name = port_to_proto(proto)
-        soln.update({'proto': "IPv4", 'display': "ipv4?", 'pl': ipv4_pl})
+        soln.update({'src_ip': src_ip, 'dst_ip': dst_ip, 'proto': "IPv4", 'pl': ipv4_pl})
 
         # Check the IPv4 protocol and unpack accordingly.
         if proto_name == 'ICMP':
@@ -351,5 +358,5 @@ def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
         if eth_proto == 'DNS':
             src_port, dst_port, len, pl = unpack_udp(frame)
             soln.update({'proto': "DNS", 'display': format_dns_data(pl), 'pl': pl})
-    
-    return soln['proto'], soln['display'], soln['pl']
+
+    return soln['src_ip'], soln['dst_ip'], soln['proto'], soln['display'], soln['pl']

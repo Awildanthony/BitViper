@@ -83,13 +83,14 @@ class PacketSniffer(threading.Thread):
             except socket.timeout:
                 continue
 
-            packet_data = (0, 0, '0.000000', 'N/A', 'N/A', 'N/A', 0, 'N/A')
+            packet_data = (0, 0, '---', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 0, 'N/A')
             try:
                 # Parse raw data from the network frame into an ethernet frame.
                 dst_mac, src_mac, proto, eth_frame = parse_net_frame(net_frame)
 
                 # Get the protocol to display and the payload as bytes.
-                proto, display_data, pl = parse_eth_frame(proto, eth_frame)
+                src_ip, dst_ip, proto, info, pl = parse_eth_frame(proto, eth_frame)
+
                 # TODO: fix bug where DNS packet has pl as display data. How?
 
                 # Increment packet number; get and format current time.
@@ -102,11 +103,13 @@ class PacketSniffer(threading.Thread):
                         packet_data = (self.sesh_num,  # Session Number
                                        self.pkt_num,   # Packet Number
                                        curr_t,         # Time
-                                       src_mac,        # Source MAC
-                                       dst_mac,        # Destination MAC
+                                       src_mac,        # Source MAC Address
+                                       dst_mac,        # Destination MAC Address
+                                       src_ip,         # Source IP Address
+                                       dst_ip,         # Destination IP Address
                                        proto,          # Network Protocol
                                        len(pl),        # Length
-                                       display_data,   # Display Data
+                                       info,           # Display Data
                                        pl)             # Payload
                         try:
                             # Add the packet to the display queue.
@@ -175,11 +178,12 @@ class SnifferGUI:
 
         # Set launch header and window dimensions.
         self.root.title('SocketSloth')
-        self.root.geometry(f'{int(screen_width * 0.8)}x{int(screen_height * 0.5)}')
+        self.root.geometry(f'{int(screen_width * 1)}x{int(screen_height * 0.5)}')
 
-        # Set data font style and row height.
+        # Set data font style, row height, and (left) padding for column headers.
         style = ttk.Style()
-        style.configure('Treeview', font=('Script', 11), rowheight=35)
+        style.configure('Treeview', font=('Script', 11), rowheight=40)
+        style.configure('Treeview.Heading', padding=(10, 0, 0, 0))
 
         # Set buttons.
         button_frame = tk.Frame(self.root)
@@ -223,35 +227,36 @@ class SnifferGUI:
         search_button.pack(side=tk.LEFT)
 
         # Set header titles.
-        self.tree = ttk.Treeview(self.root, columns=('Sesh', 'No.', 'Time', 
-                                                     'Source', 'Destination', 
-                                                     'Protocol', 'Length', 
-                                                     'Data'), 
-                                            show='headings')
+        self.tree = ttk.Treeview(self.root, columns=(
+            'Sesh', 'No.', 'Time', 'Source MAC', 'Destination MAC', 
+            'Source IP', 'Destination IP', 'Protocol', 'Length', 'Info'
+        ), show='headings')
         self.tree.heading('Sesh', text="Sesh")
         self.tree.heading('No.', text="No.")
         self.tree.heading('Time', text="Time")
-        self.tree.heading('Source', text="Source")
-        self.tree.heading('Destination', text="Destination")
+        self.tree.heading('Source MAC', text="Source MAC")
+        self.tree.heading('Destination MAC', text="Destination MAC")
+        self.tree.heading('Source IP', text="Source IP")
+        self.tree.heading('Destination IP', text="Destination IP")
         self.tree.heading('Protocol', text="Protocol")
         self.tree.heading('Length', text="Length")
-        self.tree.heading('Data', text="Data")
+        self.tree.heading('Info', text="Data")
 
         # Set header titles with binding to enable sorting.
-        # Width ratios should add up to 0.9 != 1.0, for some reason?
-        for col, ratio in [('Sesh',         0.03),
-                           ('No.',          0.05), 
-                           ('Time',         0.08), 
-                           ('Source',       0.12), 
-                           ('Destination',  0.12), 
-                           ('Protocol',     0.08), 
-                           ('Length',       0.08), 
-                           ('Data',         0.34)]:
-            self.tree.column(col, anchor='c', width=int(screen_width * ratio))
-            self.tree.heading(col, text=col, anchor='c', 
+        # NOTE: why do sum of ratios not have to equal 1?
+        for col, ratio in [('Sesh',             0.02),
+                           ('No.',              0.04), 
+                           ('Time',             0.06), 
+                           ('Source MAC',       0.08), 
+                           ('Destination MAC',  0.08), 
+                           ('Source IP',        0.07), 
+                           ('Destination IP',   0.07),
+                           ('Protocol',         0.04), 
+                           ('Length',           0.03), 
+                           ('Info',             0.26)]:
+            self.tree.column(col, anchor='w', width=int(screen_width * ratio))
+            self.tree.heading(col, text=col, anchor='w',
                               command=lambda c=col: self.sort_treeview(c))
-        # Data column looks better left-aligned than centered.
-        self.tree.column('Data', anchor='w')
         self.tree.pack(fill=tk.BOTH, expand=True)
 
         # TODO: creata a horizontal scrollbar OR limit width collapsing.
@@ -394,7 +399,7 @@ class SnifferGUI:
                     dst_mac, src_mac, proto, eth_pl = parse_net_frame(eth_frame)
 
                     # Extract displayable info from the ethernet frame.
-                    proto, display_data, net_pl = parse_eth_frame(proto, eth_pl)
+                    src_ip, dst_ip, proto, info, net_pl = parse_eth_frame(proto, eth_pl)
 
                     # NOTE: length of net_pl is consistently ...
                     # - 34 bytes short for TCP
@@ -412,11 +417,13 @@ class SnifferGUI:
                     packet_data = (sesh_num,      # Session Number
                                    pkt_num,       # Packet Number
                                    capture_time,  # Time
-                                   src_mac,       # Source MAC
-                                   dst_mac,       # Destination MAC
+                                   src_mac,       # Source MAC Address
+                                   dst_mac,       # Destination MAC Address
+                                   src_ip,        # Source IP Address
+                                   dst_ip,        # Destination IP Address
                                    proto,         # Network Protocol
                                    len(net_pl),   # Length
-                                   display_data,  # Display Data
+                                   info,  # Display Data
                                    net_pl)        # Payload
                     loaded_packets.append(packet_data)
 
@@ -437,8 +444,9 @@ class SnifferGUI:
 
     def update_gui(self: 'SnifferGUI') -> None:
         """
-        Update the GUI to reflect changes in the packet queue.
-        Happens every `UPDATES_PER_SECOND` times per second.
+        Updates the GUI to reflect changes in `self.tree` brought 
+        about by incoming packets processed from `self.queue`. 
+        `UPDATES_PER_SECOND` refresh rate.
         """
         if self.sniffer:
             while not self.queue.empty():
