@@ -83,13 +83,17 @@ class PacketSniffer(threading.Thread):
             except socket.timeout:
                 continue
 
-            packet_data = (0, 0, '---', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 0, 'N/A')
+            packet_data = (0, 0, '---', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 0, b'')
             try:
                 # Parse raw data from the network frame into an ethernet frame.
                 dst_mac, src_mac, proto, eth_frame = parse_net_frame(net_frame)
 
                 # Get the protocol to display and the payload as bytes.
                 src_ip, dst_ip, proto, info, pl = parse_eth_frame(proto, eth_frame)
+
+                # NOTE: the bytestrings are irregular (non-decodable, idk why);
+                # we need to correct them and ship them as bytestrings still.
+                pl = reformat_bytes(pl)
 
                 # TODO: fix bug where DNS packet has pl as display data. How?
 
@@ -114,7 +118,7 @@ class PacketSniffer(threading.Thread):
                         try:
                             # Add the packet to the display queue.
                             self.queue.put(packet_data)
-                            # Write the packet to the pcap file.
+                            # Write the packet to the pcap file; must be untouched `net_frame`.
                             wrpcap(self.outfile, net_frame, append=True)
 
                         except Exception as queue_err:
@@ -159,8 +163,8 @@ class SnifferGUI:
         self.queue = packet_queue
         self.lock = thread_lock
         self.sniffer = None
-        self.sorting_column = None  # Most recent column sorted.
-        self.sorting_order = True   # Ascending by default.
+        self.sorting_col = None  # Most recent column sorted.
+        self.asc_order = True    # Ascending by default.
         self.capture_running = False
         self.outfile = "captured_packets.pcap"  # TODO: make this dynamically set.
         self.setup_ui()
@@ -423,7 +427,7 @@ class SnifferGUI:
                                    dst_ip,        # Destination IP Address
                                    proto,         # Network Protocol
                                    len(net_pl),   # Length
-                                   info,  # Display Data
+                                   info,          # Display Data
                                    net_pl)        # Payload
                     loaded_packets.append(packet_data)
 
@@ -481,29 +485,29 @@ class SnifferGUI:
     def show_raw_data(self: 'SnifferGUI') -> None:
         """
         Offers the user a selection menu to further examine a
-        packet by right-clicking it. Currently supports only
-        examining the payload in either raw hex or ASCII format.
+        packet by right-clicking it. Dumps the payload in either 
+        raw bytestring, hexadecimal, or ASCII format.
         """
         selected_item = self.tree.selection()
         if selected_item:
-            # values = (sesh, pkt #, time, src MAC, dst MAC, proto, len, data)
             values = self.tree.item(selected_item, 'values')
             if values:
+                # values = (sesh #, pkt #, time, src MAC, dst MAC, 
+                #           src IP, dst IP, proto, len, info, payload)
                 payload = values[-1]
-                hex_data = payload
 
                 # Create a Toplevel window for displaying raw data.
                 raw_data_window = tk.Toplevel(self.root)
                 raw_data_window.title("Raw Data Viewer")
                 raw_data_window.geometry('1400x800')
 
-                # Set the initial format to "Raw Hex Data".
+                # Set the initial format to "Raw Byte String".
                 format_var = tk.StringVar(raw_data_window)
-                format_var.set("Raw Hex Data")
+                format_var.set("Raw Byte String")
 
                 # Create a Text widget to display the raw data.
                 text_widget = tk.Text(raw_data_window, wrap=tk.WORD)
-                text_widget.insert(tk.END, hex_data)
+                text_widget.insert(tk.END, payload)
                 text_widget.pack(expand=True, fill=tk.BOTH)
 
                 # Set the text widget to read-only.
@@ -513,61 +517,52 @@ class SnifferGUI:
                 format_menu = tk.OptionMenu(
                     raw_data_window, 
                     format_var, 
-                    "Raw Hex Data", 
+                    "Raw Bytestring", 
                     "ASCII", 
-                    command=lambda x: self.update_format(x, text_widget))
+                    "Hexadecimal",
+                    command=lambda x: self.update_format(x, text_widget, payload))
                 format_menu.pack()
 
-    def update_format(self: 'SnifferGUI', 
-                      format_type: str, 
-                      text_widget: tk.Text) -> None:
+    def update_format(self: 'SnifferGUI', format_type: str, 
+                      text_widget: tk.Text, payload: bytes) -> None:
         """
-        Update the display format of the payload data (e.g., hex -> ASCII).
+        Update the display format of the payload data in:
+            - Raw Bytestring
+            - ASCII
+            - Hexadecimal
         """
+        # NOTE: because I can't figure out a way to both simultaneously store
+        # `payload` in self.Treeview and prevent it from being displayed AND
+        # from being turned into a string, we need a way to convert the string
+        # representation of a bytestring into ASCII; we trust the input as valid,
+        # i.e., accurately depicting the actual payload of the packet we care about.
+
+        payload = str_to_bytes(payload)
         if format_type == 'ASCII':
-            # Get the raw hex data string from the text widget.
-            raw_hex_data_str = text_widget.get('1.0', tk.END).strip()
-            if self.sniffer:
-                hex_data = self.sniffer.hex_data
-            else:
-                # Convert the raw hex data string to bytes
-                try:
-                    hex_data = bytes.fromhex(raw_hex_data_str)
-                except ValueError:
-                    return
-
-            # Decode the raw hex data to ASCII.
-            ascii_data = ''.join(
-                chr(byte) if 32 <= byte < 127 else '.'
-                for byte in hex_data
-            )
-
-            # Update the text widget with the ASCII data.
-            text_widget.config(state=tk.NORMAL)
-            text_widget.delete('1.0', tk.END)
-            text_widget.insert(tk.END, ascii_data)
-            text_widget.config(state=tk.DISABLED)
+            # Decode the payload to ASCII.
+            ascii_data = payload.decode('ascii', errors='ignore')
+            data_to_display = ascii_data
+        elif format_type == 'Hexadecimal':
+            # Convert the payload to Hexadecimal.
+            hex_data = ' '.join(f'{byte:02X}' for byte in payload)
+            data_to_display = hex_data
         else:
-            # Display the raw hex data.
-            text_widget.config(state=tk.NORMAL)
-            text_widget.delete(1.0, tk.END)
-            text_widget.insert(
-                tk.END, 
-                ' '.join(f'{byte:02X}' for byte in self.sniffer.hex_data))
-            text_widget.config(state=tk.DISABLED)
+            # Display the raw byte string.
+            data_to_display = payload
+
+        # Update the text widget with the chosen format.
+        text_widget.config(state=tk.NORMAL)
+        text_widget.delete('1.0', tk.END)
+        text_widget.insert(tk.END, data_to_display)
+        text_widget.config(state=tk.DISABLED)
 
     def sort_treeview(self: 'SnifferGUI', col: str) -> None:
         """
         Sort the data table in the GUI based on the selected column.
         Toggles between ASC (default) and DESC alphanumerical order.
         """
-        # Check if we're sorting the same column.
-        if self.sorting_column == col:
-            # Toggle sorting order.
-            self.sorting_order = not self.sorting_order
-        else:
-            # Set default sorting order to ascending for a new column.
-            self.sorting_order = True
+        # Toggle sorting order if we're sorting the same column; else asc order.
+        self.asc_order = not self.asc_order if self.sorting_col == col else True
 
         # Create a list of tuples with the sort value and item's ID.
         items = [(float(self.tree.set(k, col)) 
@@ -575,14 +570,14 @@ class SnifferGUI:
                   else self.tree.set(k, col),
                   k)
                 for k in self.tree.get_children('')]
-        items.sort(reverse=self.sorting_order)
+        items.sort(reverse=self.asc_order)
 
         # Rearrange items in sorted positions.
         for index, (val, k) in enumerate(items):
             self.tree.move(k, '', index)
 
         # Update sorting column.
-        self.sorting_column = col
+        self.sorting_col = col
     
     def apply_search(self: 'SnifferGUI') -> None:
         """
@@ -591,7 +586,6 @@ class SnifferGUI:
         # Convert the query to lowercase for case-insensitive search.
         query = self.search_entry.get().lower()
         matching_items = []
-
         for item_id in self.tree.get_children():
             item = self.tree.item(item_id, 'values')
             if any(query in str(value).lower() for value in item):

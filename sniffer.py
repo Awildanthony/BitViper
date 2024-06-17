@@ -270,15 +270,34 @@ def parse_http_data(data: bytes) -> tuple[Optional[str],
     return http_method, http_url, status_code
 
 
-def filter_non_hex(s: str) -> str:
-    """
-    TODO: fix if this is necessary, or remove if not.
+def reformat_bytes(input_bytes: bytes) -> bytes:
+    # Convert bytes to string; strip bytes encapsulation; split by "\x".
+    print(f"1: {input_bytes}")
+    str_representation = str(input_bytes)[2:-1].split("\\x")
+    print(f"2: {str_representation}")
 
-    Shitty work-around that might be unnecessary altogether.
-    Filters non-hexadecimal characters from a string.
-    """
-    # May not work properly if "\"" or "x" aren't used to designate a byte ...
-    return ''.join(c for c in s if c in '0123456789abcdexfABCDEF\\\'')
+    # Initialize a list to store transformed bytes.
+    transformed_bytes = []
+    for part in str_representation:
+        if part.strip():
+            # Get the first two characters as hex value.
+            hex_value = chr(int(part[:2], 16))
+
+            # Translate remaining characters.
+            for char in part[2:]:
+                # Represent space as \x20 ; newline as \x0a ; all else normal.
+                if char == ' ':
+                    transformed_bytes.append("\x20")
+                elif char == '\n':
+                    transformed_bytes.append("\x0a")
+                else:
+                    transformed_bytes.append("\\x" + format(ord(char), '02x'))
+
+    # Join transformed bytes with "\x" and wrap with "b'" and "'".
+    result = "".join(transformed_bytes).encode('utf-8')
+    # result = result.replace("\\x", "\x")
+    # Convert string back to bytes.
+    return result
 
 
 def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
@@ -288,13 +307,7 @@ def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
     network protocol, display data, and payload data.
     """
     # Set defaults.
-    soln = {
-        'src_ip': "", 
-        'dst_ip': "", 
-        'proto': eth_proto, 
-        'display': str(frame), 
-        'pl': frame
-    }
+    soln = {'src_ip': "", 'dst_ip': "", 'proto': eth_proto, 'info': str(frame), 'pl': frame}
 
     # Check the Ethernet protocol and unpack accordingly.
     if eth_proto == 'IPv4':
@@ -305,13 +318,13 @@ def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
         # Check the IPv4 protocol and unpack accordingly.
         if proto_name == 'ICMP':
             display, pl = unpack_icmp(ipv4_pl)
-            soln.update({'proto': "ICMP", 'display': display, 'pl': pl})
+            soln.update({'proto': "ICMP", 'info': display, 'pl': pl})
 
         elif proto_name == 'TCP':
             src_port, dst_port, seq, ack, tcp_flags, \
                 http_method, http_url, status, tcp_data = unpack_tcp(ipv4_pl)
             tcp_flags = set_tcp_flags(tcp_flags)
-            soln['proto'], soln['display'] = "TCP", tcp_data
+            soln['proto'], soln['info'] = "TCP", tcp_data
             # TODO: we aren't unpacking the tcp payload at all???
 
             # Call to `unpack_tcp()` found HTTP(S) data.
@@ -321,10 +334,10 @@ def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
                 soln['proto'] = "HTTP(S)" if digits_in(dst_port) else dst_port
             else:
                 try:
-                    soln['display'] = (f"{src_port} → {dst_port} "
+                    soln['info'] = (f"{src_port} → {dst_port} "
                                        f"{tcp_flags} Seq={seq} Ack={ack}")
                 except UnicodeDecodeError as error:
-                    soln['display'] = f"Decoding error:\n{error}"
+                    soln['info'] = f"Decoding error:\n{error}"
 
         elif proto_name == 'UDP':
             src_port, dst_port, len, pl = unpack_udp(ipv4_pl)
@@ -332,12 +345,12 @@ def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
 
             # Call to `unpack_udp` found use of conventional DNS port(s).
             if src_port in DNS_PORTS or dst_port in DNS_PORTS:
-                soln['proto'], soln['display']  = "DNS", format_dns_data(pl)
+                soln['proto'], soln['info'] = "DNS", format_dns_data(pl)
             else:
                 try:
-                    soln['display'] = f"{src_port} → {dst_port} Len={len}"
+                    soln['info'] = f"{src_port} → {dst_port} Len={len}"
                 except UnicodeDecodeError as error:
-                    soln['display'] = f"Decoding error:\n{error}"
+                    soln['info'] = f"Decoding error:\n{error}"
 
     # TODO: everything below this is a result of poor input specs/formatting!!!
 
@@ -346,7 +359,7 @@ def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
         # DNS (non-IPv4).
         if eth_proto in map(str, DNS_PORTS):
             src_port, dst_port, len, pl = unpack_udp(frame)
-            soln.update({'proto': "DNS", 'display': format_dns_data(pl), 'pl': pl})
+            soln.update({'proto': "DNS", 'info': format_dns_data(pl), 'pl': pl})
 
         # ARP.
         elif eth_proto in map(str, ARP_PORTS):
@@ -357,6 +370,6 @@ def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
     elif eth_proto in IPV4_PROTOS:
         if eth_proto == 'DNS':
             src_port, dst_port, len, pl = unpack_udp(frame)
-            soln.update({'proto': "DNS", 'display': format_dns_data(pl), 'pl': pl})
+            soln.update({'proto': "DNS", 'info': format_dns_data(pl), 'pl': pl})
 
-    return soln['src_ip'], soln['dst_ip'], soln['proto'], soln['display'], soln['pl']
+    return soln['src_ip'], soln['dst_ip'], soln['proto'], soln['info'], soln['pl']
