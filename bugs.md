@@ -11,6 +11,6 @@ WARNING: more PcapWriter: unknown LL type for bytes. Using type 1 (Ethernet)
 
 4.) Color-coding for packets of different protocols not implemented yet.
 
-5.) Dynamic column/window contents shifting not implemented yet.
+5.) GUI window "spasms" while enforcing minimum window dimensions during resizing by user.
 
 6.) Support for MAC & Windows not tested/implemented yet.

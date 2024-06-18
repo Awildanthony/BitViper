@@ -2,7 +2,7 @@ import re
 import socket
 import struct
 from meta import *
-from typing import Optional, Union
+from typing import Union
 from urllib.parse import urlparse
 
 
@@ -85,8 +85,7 @@ def unpack_icmp(data: bytes) -> tuple[str, bytes]:
 
 
 def unpack_tcp(data: bytes) -> tuple[int, int, int, int, list[int], 
-                                     Optional[str], Optional[str], 
-                                     Optional[str], str]:
+                                     str | None, str | None, str | None, str]:
     """
     Extracts from a TCP packet its `src_port`, `dst_port`, `seq`, 
     `ack`, `tcp_flags`, `http_method`, `http_url`, and `display_data`.
@@ -222,9 +221,7 @@ def parse_dns_answer(data: bytes) -> tuple[int, bytes, dict[str, Union[str, int]
                           'RD Data': a_rdata}
 
 
-def parse_http_data(data: bytes) -> tuple[Optional[str], 
-                                          Optional[str], 
-                                          Optional[str]]:
+def parse_http_data(data: bytes) -> tuple[str | None, str | None, str | None]:
     """
     Parses HTTP data to extract the HTTP method, URL, and status code.
     """

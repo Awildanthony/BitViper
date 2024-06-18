@@ -15,7 +15,7 @@ from sniffer import *
 MAX_PACKET_SIZE = 65535
 MAX_PACKET_QUEUE_SIZE = 1000
 SOCKET_TIMEOUT = 1
-UPDATES_PER_SECOND = 10
+UPDATES_PER_SECOND = 100
 
 
 class PacketSniffer(threading.Thread):
@@ -90,7 +90,6 @@ class PacketSniffer(threading.Thread):
 
                 # Get the protocol to display and the payload as bytes.
                 src_ip, dst_ip, proto, info, pl = parse_eth_frame(proto, eth_frame)
-                pl = str(pl)
 
                 # TODO: fix bug where DNS packet has pl as display data. How?
 
@@ -115,7 +114,7 @@ class PacketSniffer(threading.Thread):
                         try:
                             # Add the packet to the display queue.
                             self.queue.put(packet_data)
-                            # Write the packet to the pcap file; must be untouched `net_frame`.
+                            # Write the packet (`net_frame`) to the pcap file.
                             wrpcap(self.outfile, net_frame, append=True)
 
                         except Exception as queue_err:
@@ -173,18 +172,42 @@ class SnifferGUI:
         """
         Set up the GUI elements to their base states.
         """
-        # Fetch screen dimensions.
+        def on_resize(event) -> None:
+            """
+            Function to handle window resize event.
+            """
+            total_width = self.tree.winfo_width()
+            for col, ratio in col_configs:
+                new_width = int(total_width * ratio)
+                self.tree.column(col, width=new_width, minwidth=min_col_widths[col])
+
+            # Calculate/define current GUI window dimensions.
+            current_width = self.root.winfo_width()
+            current_height = self.root.winfo_height()
+            min_gui_height = 400    # <-- Should be universal.
+            
+            # Enforce minimum dimensions.
+            if current_width < min_gui_width:
+                self.root.geometry(f'{min_gui_width}x{current_height}')
+            if current_height < min_gui_height:
+                self.root.geometry(f'{current_width}x{min_gui_height}')
+
+        # Fetch screen dimensions; define GUI size.
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
+        gui_width = 1850 if screen_width >= 1920 else int(screen_width * 0.9)
+        gui_height = int(screen_height * 0.65)
 
         # Set launch header and window dimensions.
-        self.root.title('SocketSloth')
-        self.root.geometry(f'{int(screen_width * 1)}x{int(screen_height * 0.5)}')
+        self.root.title('Bit Viper')
+        self.root.geometry(f'{gui_width}x{gui_height}')
 
         # Set data font style, row height, and (left) padding for column headers.
         style = ttk.Style()
-        style.configure('Treeview', font=('Script', 11), rowheight=40)
-        style.configure('Treeview.Heading', padding=(10, 0, 0, 0))
+        style.configure('Treeview', font=('Script', 11), 
+                        rowheight=30, padding=(5, 0, 0, 0))
+        style.layout('Treeview', [('Treeview.treearea', {'sticky': 'nswe'})])
+        style.configure('Treeview.Heading', padding=(5, 0, 0, 0))
 
         # Set buttons.
         button_frame = tk.Frame(self.root)
@@ -220,47 +243,59 @@ class SnifferGUI:
         search_frame = tk.Frame(self.root)
         search_frame.pack(side=tk.TOP, fill=tk.X)
 
-        self.search_entry = tk.Entry(search_frame, width=30)
+        self.search_entry = tk.Entry(search_frame, width=54)
         self.search_entry.pack(side=tk.LEFT, padx=5)
         search_button = tk.Button(search_frame, 
                                   text="Search", 
-                                  command=self.apply_search)
-        search_button.pack(side=tk.LEFT)
+                                  command=self.apply_search,)
+        search_button.pack(side=tk.LEFT, pady=5)
 
-        # Set header titles.
-        self.tree = ttk.Treeview(self.root, columns=(
-            'Sesh', 'No.', 'Time', 'Source MAC', 'Destination MAC', 
-            'Source IP', 'Destination IP', 'Protocol', 'Length', 'Info'
-        ), show='headings')
-        self.tree.heading('Sesh', text="Sesh")
-        self.tree.heading('No.', text="No.")
-        self.tree.heading('Time', text="Time")
-        self.tree.heading('Source MAC', text="Source MAC")
-        self.tree.heading('Destination MAC', text="Destination MAC")
-        self.tree.heading('Source IP', text="Source IP")
-        self.tree.heading('Destination IP', text="Destination IP")
-        self.tree.heading('Protocol', text="Protocol")
-        self.tree.heading('Length', text="Length")
-        self.tree.heading('Info', text="Data")
+        # Define default width column ratios.
+        col_configs = [
+            ('Sesh',             0.01),
+            ('No.',              0.02),
+            ('Time',             0.06),
+            ('Source MAC',       0.08),
+            ('Destination MAC',  0.08),
+            ('Source IP',        0.07),
+            ('Destination IP',   0.07),
+            ('Protocol',         0.04),
+            ('Length',           0.03),
+            ('Info',             0.29)
+        ]
 
-        # Set header titles with binding to enable sorting.
-        # NOTE: why do sum of ratios not have to equal 1?
-        for col, ratio in [('Sesh',             0.02),
-                           ('No.',              0.04), 
-                           ('Time',             0.06), 
-                           ('Source MAC',       0.08), 
-                           ('Destination MAC',  0.08), 
-                           ('Source IP',        0.07), 
-                           ('Destination IP',   0.07),
-                           ('Protocol',         0.04), 
-                           ('Length',           0.03), 
-                           ('Info',             0.26)]:
-            self.tree.column(col, anchor='w', width=int(screen_width * ratio))
-            self.tree.heading(col, text=col, anchor='w',
+        # Calculate column widths based on ratios and screen width.
+        default_col_config = {
+            col: int(gui_width * ratio) 
+            for col, ratio in col_configs
+        }
+        min_col_widths = {
+            'Sesh':             50,
+            'No.':              65,
+            'Time':             120,
+            'Source MAC':       155,
+            'Destination MAC':  155,
+            'Source IP':        130,
+            'Destination IP':   130,
+            'Protocol':         80,
+            'Length':           70,
+            'Info':             400  # This one is enforced by on_resize().
+        }
+        min_gui_width = sum(min_col_widths.values())
+
+        # Create the treeview.
+        self.tree = ttk.Treeview(self.root, 
+                                 columns=[col for col, _ in col_configs], 
+                                 show="headings")
+        # Configure columns.
+        for col, width in default_col_config.items():
+            self.tree.column(col, anchor='w', 
+                             width=width, 
+                             minwidth=min_col_widths[col])
+            self.tree.heading(col, text=col, 
+                              anchor='w', 
                               command=lambda c=col: self.sort_treeview(c))
         self.tree.pack(fill=tk.BOTH, expand=True)
-
-        # TODO: creata a horizontal scrollbar OR limit width collapsing.
 
         # Initialize right-click menu.
         self.context_menu = tk.Menu(self.root, tearoff=0)
@@ -269,6 +304,9 @@ class SnifferGUI:
 
         # Bind the right-click event to the Treeview.
         self.tree.bind('<Button-3>', self.show_context_menu)
+
+        # Bind resize event to the Treeview.
+        self.tree.bind('<Configure>', on_resize)
 
         # Update GUI to base state.
         self.update_gui()
@@ -368,7 +406,7 @@ class SnifferGUI:
 
         Prompts user to load a `.pcap` infile, which will display its
         packets in the table. Any .pcap files previously generated by
-        SocketSloth will include a session number, packet number, and
+        Bit Viper will include a session number, packet number, and
         time, while others (e.g., from Wireshark) will not.
         """
         try:
