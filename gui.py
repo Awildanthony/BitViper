@@ -90,10 +90,7 @@ class PacketSniffer(threading.Thread):
 
                 # Get the protocol to display and the payload as bytes.
                 src_ip, dst_ip, proto, info, pl = parse_eth_frame(proto, eth_frame)
-
-                # NOTE: the bytestrings are irregular (non-decodable, idk why);
-                # we need to correct them and ship them as bytestrings still.
-                pl = reformat_bytes(pl)
+                pl = str(pl)
 
                 # TODO: fix bug where DNS packet has pl as display data. How?
 
@@ -524,7 +521,7 @@ class SnifferGUI:
                 format_menu.pack()
 
     def update_format(self: 'SnifferGUI', format_type: str, 
-                      text_widget: tk.Text, payload: bytes) -> None:
+                      text_widget: tk.Text, payload: str) -> None:
         """
         Update the display format of the payload data in:
             - Raw Bytestring
@@ -537,18 +534,29 @@ class SnifferGUI:
         # representation of a bytestring into ASCII; we trust the input as valid,
         # i.e., accurately depicting the actual payload of the packet we care about.
 
-        payload = str_to_bytes(payload)
+        # Convert payload to desired format.
+        temp_pl = payload
         if format_type == 'ASCII':
-            # Decode the payload to ASCII.
-            ascii_data = payload.decode('ascii', errors='ignore')
-            data_to_display = ascii_data
+            # Immediately replace all '\x??' sequences with fromhex(??).
+            def replace_hex_escapes(match):
+                hex_value = match.group(1)
+                byte_value = bytes.fromhex(hex_value)
+                return chr(byte_value[0])
+            temp_pl = re.sub(r'\\x([0-9A-Fa-f]{2})', replace_hex_escapes, payload)
+            
+            # Replace any remaining non-printable chars with "."; trim "b'" and "'".
+            data_to_display = ''.join(
+                chr(ord(char)) if 0x20 <= ord(char) <= 0x7E else '.' 
+                for char in temp_pl
+            )[2:-1]
         elif format_type == 'Hexadecimal':
             # Convert the payload to Hexadecimal.
-            hex_data = ' '.join(f'{byte:02X}' for byte in payload)
+            tmp_pl = temp_pl.encode('utf-8', errors='replace')
+            hex_data = ' '.join(f'{byte:02X}' for byte in tmp_pl)
             data_to_display = hex_data
         else:
-            # Display the raw byte string.
-            data_to_display = payload
+            # Display the Raw Bytestring, with replacement for non-decodable bytes.
+            data_to_display = temp_pl.encode('utf-8', errors='replace')
 
         # Update the text widget with the chosen format.
         text_widget.config(state=tk.NORMAL)

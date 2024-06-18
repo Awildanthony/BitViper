@@ -270,36 +270,6 @@ def parse_http_data(data: bytes) -> tuple[Optional[str],
     return http_method, http_url, status_code
 
 
-def reformat_bytes(input_bytes: bytes) -> bytes:
-    # Convert bytes to string; strip bytes encapsulation; split by "\x".
-    print(f"1: {input_bytes}")
-    str_representation = str(input_bytes)[2:-1].split("\\x")
-    print(f"2: {str_representation}")
-
-    # Initialize a list to store transformed bytes.
-    transformed_bytes = []
-    for part in str_representation:
-        if part.strip():
-            # Get the first two characters as hex value.
-            hex_value = chr(int(part[:2], 16))
-
-            # Translate remaining characters.
-            for char in part[2:]:
-                # Represent space as \x20 ; newline as \x0a ; all else normal.
-                if char == ' ':
-                    transformed_bytes.append("\x20")
-                elif char == '\n':
-                    transformed_bytes.append("\x0a")
-                else:
-                    transformed_bytes.append("\\x" + format(ord(char), '02x'))
-
-    # Join transformed bytes with "\x" and wrap with "b'" and "'".
-    result = "".join(transformed_bytes).encode('utf-8')
-    # result = result.replace("\\x", "\x")
-    # Convert string back to bytes.
-    return result
-
-
 def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
     """
     Provided a packet's ethernet protocol and ethernet frame, 
