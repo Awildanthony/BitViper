@@ -90,6 +90,8 @@ class PacketSniffer(threading.Thread):
 
                 # Get the protocol to display and the payload as bytes.
                 src_ip, dst_ip, proto, info, pl = parse_eth_frame(proto, eth_frame)
+                if proto in ["ARP"]:
+                    dst_mac = "Broadcast"
 
                 # TODO: fix bug where DNS packet has pl as display data. How?
 
@@ -589,7 +591,7 @@ class SnifferGUI:
             )[2:-1]
         elif format_type == 'Hexadecimal':
             # Convert the payload to Hexadecimal.
-            tmp_pl = temp_pl.encode('utf-8', errors='replace')
+            tmp_pl = eval(temp_pl)
             hex_data = ' '.join(f'{byte:02X}' for byte in tmp_pl)
             data_to_display = hex_data
         else:

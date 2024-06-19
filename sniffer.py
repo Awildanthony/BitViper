@@ -46,6 +46,8 @@ def parse_net_frame(packet_header: bytes) -> tuple[str, str, str, bytes]:
     header_info = packet_header[:14]
     payload = packet_header[14:]
     dst_mac, src_mac, proto = struct.unpack("! 6s 6s H", header_info)
+    if dst_mac == "FF:FF:FF:FF:FF:FF":
+        dst_mac = "Broadcast"
     proto_name = port_to_proto(socket.htons(proto))
     return mac_str(dst_mac), mac_str(src_mac), proto_name, payload
 
@@ -138,6 +140,34 @@ def unpack_udp(data: bytes) -> tuple[int, int, int, bytes]:
     payload = data[8:]
     src_port, dst_port, size = struct.unpack("! H H 2x H", header_info)
     return src_port, dst_port, size, payload
+
+
+def unpack_arp(data: bytes):
+    """
+    Unpacks an identified ARP packet by extracting the sender
+    and receiver MAC and IP addresses. Returns the source IP 
+    address, a formatted info string from the packet, and the 
+    remaining payload itself (if any).
+    """
+    # Unpack the ARP packet according to its known architecture.
+    htype, ptype, hlen, plen, oper, \
+        sha, spa, tha, tpa = struct.unpack('! H H B B H 6s 4s 6s 4s', data[:28])
+    
+    # Convert the numeric values to their respective representations.
+    sha_str = mac_str(sha)              # Source MAC
+    tha_str = mac_str(tha)              # Target MAC
+    spa_str = '.'.join(map(str, spa))   # Source IP
+    tpa_str = '.'.join(map(str, tpa))   # Target IP
+    
+    # Determine operation type (1: request, 2: reply).
+    if oper == 1:
+        info = f"Who has {tpa_str}? Tell {spa_str}"
+    elif oper == 2:
+        info = f"{spa_str} is at {sha_str}"
+    else:
+        info = f"Unknown operation {oper}"
+    
+    return spa_str, info, data[28:]
 
 
 def format_dns_data(dns_data: bytes) -> str:
@@ -280,7 +310,9 @@ def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
     if eth_proto == 'IPv4':
         ver, hdr_len, ttl, proto, src_ip, dst_ip, ipv4_pl = unpack_ipv4(frame)
         proto_name = port_to_proto(proto)
-        soln.update({'src_ip': src_ip, 'dst_ip': dst_ip, 'proto': "IPv4", 'pl': ipv4_pl})
+        soln.update({
+            'src_ip': src_ip, 'dst_ip': dst_ip, 'proto': f"IPv4 ({proto})", 'pl': ipv4_pl
+        })
 
         # Check the IPv4 protocol and unpack accordingly.
         if proto_name == 'ICMP':
@@ -330,13 +362,23 @@ def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
 
         # ARP.
         elif eth_proto in map(str, ARP_PORTS):
-            soln['proto'] = "ARP"
-            # TODO: implement the rest.
+            src_ip, info, pl = unpack_arp(frame)
+            soln.update({
+                'src_ip': src_ip, 'dst_ip': "Broadcast", 
+                'proto': "ARP", 'info': info, 'pl': pl
+            })
     
     # We have a specific IPV4 network protocol's name.
     elif eth_proto in IPV4_PROTOS:
         if eth_proto == 'DNS':
             src_port, dst_port, len, pl = unpack_udp(frame)
             soln.update({'proto': "DNS", 'info': format_dns_data(pl), 'pl': pl})
+        
+        elif eth_proto == 'ARP':
+            src_ip, info, pl = unpack_arp(frame)
+            soln.update({
+                'src_ip': src_ip, 'dst_ip': "Broadcast", 
+                'proto': "ARP", 'info': info, 'pl': pl
+            })
 
     return soln['src_ip'], soln['dst_ip'], soln['proto'], soln['info'], soln['pl']

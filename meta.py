@@ -17,11 +17,12 @@ PORT_TO_PROTOCOL: dict[int, str] = {
 IPV4_PROTOS = [
     "ICMP", 
     "TCP",
-        "HTTP", 
-        "HTTPS", 
-        "HTTP(S)", 
+    "HTTP", 
+    "HTTPS", 
+    "HTTP(S)",
     "UDP", 
-    "DNS"
+    "DNS",
+    "ARP"
 ]
 
 
