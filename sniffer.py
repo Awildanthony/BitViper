@@ -8,10 +8,11 @@ from urllib.parse import urlparse
 
 def port_to_proto(port: int) -> str:
     """
-    Match `port` number to protocol.
+    Match `port` number to protocol number supported by this program;
+    if none, then the IANA-recognized protocol belonging to that number.
     If none, return `port` as a string.
     """
-    return PORT_TO_PROTOCOL.get(port, str(port))
+    return PORT_TO_PROTOCOL.get(port, ALL_PROTOCOLS.get(port, str(port)))
 
 
 def record_to_dns(record: int) -> str:
@@ -63,6 +64,12 @@ def unpack_ipv4(data: bytes) -> tuple[int, int, int, int, str, str, bytes]:
     hdr_len = (ver_hdr_len & 15) * 4
     payload = data[hdr_len:]
     ttl, proto, src_ip, dst_ip = struct.unpack("! 8x B B 2x 4s 4s", data[:20])
+
+    # Even if we don't support a protocol, we want its name to be in `proto`.
+    if proto not in PORT_TO_PROTOCOL.keys():
+        if proto in ALL_PROTOCOLS.keys():
+            proto = ALL_PROTOCOLS[proto]
+
     src_ip, dst_ip = ".".join(map(str, src_ip)), ".".join(map(str, dst_ip))
     return ver, hdr_len, ttl, proto, src_ip, dst_ip, payload
 
@@ -311,7 +318,7 @@ def parse_eth_frame(eth_proto: str, frame: bytes) -> tuple[str, str, bytes]:
         ver, hdr_len, ttl, proto, src_ip, dst_ip, ipv4_pl = unpack_ipv4(frame)
         proto_name = port_to_proto(proto)
         soln.update({
-            'src_ip': src_ip, 'dst_ip': dst_ip, 'proto': f"IPv4 ({proto})", 'pl': ipv4_pl
+            'src_ip': src_ip, 'dst_ip': dst_ip, 'proto': f"{proto}", 'pl': ipv4_pl
         })
 
         # Check the IPv4 protocol and unpack accordingly.
