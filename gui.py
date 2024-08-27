@@ -207,7 +207,7 @@ class SnifferGUI:
         # Set data font style, row height, and (left) padding for column headers.
         style = ttk.Style()
         style.configure('Treeview', font=('Script', 11), 
-                        rowheight=30, padding=(5, 0, 0, 0))
+                        rowheight=40, padding=(5, 0, 0, 0))
         style.layout('Treeview', [('Treeview.treearea', {'sticky': 'nswe'})])
         style.configure('Treeview.Heading', padding=(5, 0, 0, 0))
 
